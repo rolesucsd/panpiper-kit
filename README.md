@@ -25,7 +25,7 @@ Typical GWAS pipelines (`pyseer` etc.) assume you already know what to test (uni
 
 - **Step 1**: You give it genomes + an ANI species assignment + metadata.
 - **Step 2**: It runs Mash distances within each species and tests whether metadata explains those distances.
-- **Step 3**: For phenotypes with enough variation, it runs a **unitig GWAS per species**, controlling multiple testing.
+- **Step 3**: For phenotypes with variation, it runs a **unitig GWAS per species**, controlling multiple testing.
 
 So you can immediately see which species × phenotypes show meaningful structure, and then drill down on specific unitig hits.
 
@@ -65,15 +65,15 @@ So you can immediately see which species × phenotypes show meaningful structure
    ```
 
 3. **ANI map (`ani_map.tsv`)**:  
-   - Tab-delimited, two columns: `sample<TAB>species`
+   - Tab-delimited, two columns: `species<TAB>sample`
    - Defines the species bin for each sample.
 
    Example:
    ```
-   S1    spA
-   S2    spA
-   S3    spA
-   S4    spA
+   spA    S1
+   spA    S2
+   spA    S3
+   spA    S4
    ```
 
 ---

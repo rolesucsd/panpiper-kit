@@ -95,7 +95,7 @@ def main() -> None:
     )
     ap.add_argument('--genomes', required=True, help='directory of FASTA files')
     ap.add_argument('--metadata', required=True)
-    ap.add_argument('--ani-map', required=True, help='Sample (basename of FASTA file)<TAB>species')
+    ap.add_argument('--ani-map', required=True, help='TSV with cluster/species<TAB>sample (basename of FASTA file)')
     ap.add_argument('--out', required=True, help='output directory')
     ap.add_argument('--checkm', default=None, help='CheckM/quality TSV (columns like sample/bin/genome, completeness/comp, contamination/contam)')
     ap.add_argument('--comp-min', type=float, default=80.0, help='minimum completeness to keep (default 80.0)')
@@ -151,7 +151,7 @@ def main() -> None:
     )
 
     # build species -> sample list and run in parallel
-    ani = pd.read_csv(args.ani_map, sep='\t', names=['sample','species']).drop_duplicates()
+    ani = pd.read_csv(args.ani_map, sep='\t', names=['species','sample']).drop_duplicates()
     species_list = sorted(ani['species'].unique())
     sp_to_samples = {sp: [s for s in ani.loc[ani['species']==sp, 'sample'] if s in s2p] for sp in species_list}
 

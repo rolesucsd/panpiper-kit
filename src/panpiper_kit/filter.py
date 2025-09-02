@@ -101,7 +101,7 @@ def filter_metadata_per_species(
     
     Args:
         metadata_fp: Path to metadata TSV file containing sample information
-        ani_map_fp: Path to ANI mapping TSV file with sample->species assignments
+        ani_map_fp: Path to ANI mapping TSV file with species->sample assignments
         out_dir: Output directory for filtered phenotype files
         min_n: Minimum number of samples required per species
         max_missing_frac: Maximum fraction of missing values allowed per phenotype
@@ -118,7 +118,7 @@ def filter_metadata_per_species(
     meta = pd.read_csv(metadata_fp, sep='\t').drop_duplicates(subset=['sample'])
     if 'sample' not in meta.columns:
         raise RuntimeError("metadata must contain 'sample' which maps to to the FASTA filename")
-    ani = pd.read_csv(ani_map_fp, sep='\t', names=['sample','species'])
+    ani = pd.read_csv(ani_map_fp, sep='\t', names=['species','sample'])
     df = ani.merge(meta, on='sample', how='inner')
     out_index = {}
     for species, sub in df.groupby('species', sort=False):
