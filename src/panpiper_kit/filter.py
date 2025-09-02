@@ -7,6 +7,65 @@ import pandas as pd
 import numpy as np
 
 
+def _pick_col(cols_lower_map: Dict[str, str], candidates: List[str]) -> str:
+    """
+    Find the first column in df whose lowercased name contains any of the candidate substrings.
+    Raises KeyError if not found.
+    
+    Args:
+        cols_lower_map: Dictionary mapping lowercase column names to original names
+        candidates: List of candidate substrings to search for
+        
+    Returns:
+        Original column name that matches one of the candidates
+        
+    Raises:
+        KeyError: If no column matches any of the candidates
+    """
+    for low, orig in cols_lower_map.items():
+        if any(cand in low for cand in candidates):
+            return orig
+    raise KeyError(f"Missing required column matching any of: {candidates}")
+
+def filter_by_checkm(s2p: Dict[str, str], checkm_fp: str, comp_min: float, cont_max: float) -> Dict[str, str]:
+    """
+    Filter samples based on CheckM quality metrics.
+    
+    Given a sample->fasta map and a CheckM-like TSV file, returns a filtered sample->fasta map
+    containing only samples that meet the specified completeness and contamination thresholds.
+    Accepts flexible headers, e.g. sample/bin/genome, completeness/comp, contamination/contam.
+    
+    Args:
+        s2p: Dictionary mapping sample names to FASTA file paths
+        checkm_fp: Path to CheckM TSV file with quality metrics
+        comp_min: Minimum completeness percentage to keep (default 80.0)
+        cont_max: Maximum contamination percentage to keep (default 10.0)
+        
+    Returns:
+        Filtered dictionary mapping sample names to FASTA file paths
+        
+    Raises:
+        KeyError: If required columns are not found in CheckM file
+    """
+    df = pd.read_csv(checkm_fp, sep="\t", dtype=str)
+    if df.empty:
+        return {}
+
+    cols_map = {c.lower(): c for c in df.columns}
+    s_col = _pick_col(cols_map, ["sample", "bin", "genome", "id", "name"])
+    c_col = _pick_col(cols_map, ["completeness", "comp"])
+    t_col = _pick_col(cols_map, ["contamination", "contam"])
+
+    comp = pd.to_numeric(df[c_col], errors="coerce")
+    cont = pd.to_numeric(df[t_col], errors="coerce")
+    keep_names = set(df.loc[(comp >= comp_min) & (cont <= cont_max), s_col].astype(str))
+    if not keep_names:
+        return {}
+
+    # Keep only samples present in s2p and in keep_names
+    kept = {s: p for s, p in s2p.items() if s in keep_names}
+    return kept
+
 def _classify(s: pd.Series, min_unique_cont: int) -> str:
     """
     Classify a pandas Series as binary, continuous, or categorical.

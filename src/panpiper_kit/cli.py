@@ -7,7 +7,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from typing import Dict, List, Tuple, Any
 
 from .files import list_fastas, ensure_dir, run
-from .filter_pheno import filter_metadata_per_species
+from .filter import filter_metadata_per_species, filter_by_checkm
 from .mash import mash_within_species
 from .assoc import distance_assoc_one, fast_distance_tests
 from .gwas import ensure_unitigs
@@ -86,15 +86,20 @@ def _worker(
 def main() -> None:
     """
     Main CLI entry point for panpiper-kit.
-    
-    Performs ANI-split Mash lineage tests and per-species unitig GWAS analysis
-    with parallel processing capabilities.
+
+    Performs ANI-split Mash lineage tests and per-species unitig GWAS with optional CheckM filtering
+    and parallel processing across species.
     """
-    ap = argparse.ArgumentParser(description='ANI-split Mash lineage tests + per-species unitig GWAS (parallel)')
+    ap = argparse.ArgumentParser(
+        description='ANI-split Mash lineage tests + per-species unitig GWAS (parallel)'
+    )
     ap.add_argument('--genomes', required=True, help='directory of FASTA files')
     ap.add_argument('--metadata', required=True)
-    ap.add_argument('--ani-map', required=True, help='TSV of sample<TAB>species')
+    ap.add_argument('--ani-map', required=True, help='Sample (basename of FASTA file)<TAB>species')
     ap.add_argument('--out', required=True, help='output directory')
+    ap.add_argument('--checkm', default=None, help='CheckM/quality TSV (columns like sample/bin/genome, completeness/comp, contamination/contam)')
+    ap.add_argument('--comp-min', type=float, default=80.0, help='minimum completeness to keep (default 80.0)')
+    ap.add_argument('--cont-max', type=float, default=10.0,  help='maximum contamination to keep (default 10.0)')
     ap.add_argument('--threads', type=int, default=32, help='total CPU budget')
     ap.add_argument('--workers', type=int, default=4, help='number of species processed in parallel')
     ap.add_argument('--perms', type=int, default=999, help='number of permutations for PERMANOVA/Mantel')
@@ -124,29 +129,37 @@ def main() -> None:
     unitig_dir = OUT/'unitigs_by_species'; ensure_dir(unitig_dir)
     ensure_dir(OUT/'assoc')
 
-    # find all FASTA files in the genomes directory
+    # enumerate FASTAs (basename == sample id)
     s2p = list_fastas(args.genomes)
 
-    # filter metadata per species
+    # CheckM filter (keeps all if file missing/empty)
+    if args.checkm:
+        pre_n = len(s2p)
+        s2p = filter_by_checkm(s2p, args.checkm, args.comp_min, args.cont_max)
+        post_n = len(s2p)
+        if post_n == 0:
+            print(f"[fatal] CheckM filter removed all samples (comp_min={args.comp_min}, cont_max={args.cont_max}).", flush=True)
+            return
+        if post_n < pre_n:
+            print(f"[note] CheckM filter kept {post_n}/{pre_n} samples.", flush=True)
+
+    # filter metadata per species (uses only remaining samples downstream)
     phenos = filter_metadata_per_species(
         metadata_fp=args.metadata, ani_map_fp=args.ani_map, out_dir=str(work/'phenos'),
         min_n=args.min_n, max_missing_frac=args.max_missing_frac,
         min_level_n=args.min_level_n, min_unique_cont=args.min_unique_cont
     )
 
-    # assign species to samples
+    # build species -> sample list and run in parallel
     ani = pd.read_csv(args.ani_map, sep='\t', names=['sample','species']).drop_duplicates()
     species_list = sorted(ani['species'].unique())
-    sp_to_samples = {sp: list(ani.loc[ani['species']==sp, 'sample']) for sp in species_list}
+    sp_to_samples = {sp: [s for s in ani.loc[ani['species']==sp, 'sample'] if s in s2p] for sp in species_list}
 
-    # run the analysis in parallel
     results = []
     with ProcessPoolExecutor(max_workers=args.workers) as ex:
         futs = []
-        for sp in species_list:
-            sams = sp_to_samples[sp]
-            # small species are skipped early
-            if len([s for s in sams if s in s2p]) < args.min_n:
+        for sp, sams in sp_to_samples.items():
+            if len(sams) < args.min_n:
                 continue
             futs.append(ex.submit(_worker, sp, sams, s2p, args, phenos, mash_dir, assoc_dir, unitig_dir))
         for f in as_completed(futs):
