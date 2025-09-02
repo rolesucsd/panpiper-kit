@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "panpiper-kit"
+version = "0.1.0"
+description = "Toolkit: ANI-split Mash lineage tests + per-species unitig GWAS (pyseer), with phenotype filtering and FDR"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.9"
+dependencies = [
+  "pandas>=2.1",
+  "numpy>=1.26",
+  "scikit-bio>=0.6.0",
+  "statsmodels>=0.14"
+]
+
+[project.scripts]
+ppk-run = "panpiper_kit.cli:main"
