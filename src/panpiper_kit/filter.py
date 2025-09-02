@@ -27,6 +27,22 @@ def _pick_col(cols_lower_map: Dict[str, str], candidates: List[str]) -> str:
             return orig
     raise KeyError(f"Missing required column matching any of: {candidates}")
 
+
+def _extract_patient_from_bin(bin_name: str) -> str:
+    """
+    Extract patient name from bin identifier.
+    
+    Expected format: {patient}_{binner}_{bin_identifier}
+    Returns the patient name (first part before first underscore).
+    
+    Args:
+        bin_name: Bin identifier string
+        
+    Returns:
+        Patient name extracted from bin identifier
+    """
+    return bin_name.split('_')[0]
+
 def filter_by_checkm(s2p: Dict[str, str], checkm_fp: str, comp_min: float, cont_max: float) -> Dict[str, str]:
     """
     Filter samples based on CheckM quality metrics.
@@ -99,9 +115,14 @@ def filter_metadata_per_species(
     This function processes metadata and ANI mapping files to create filtered
     phenotype files for each species that meet the specified criteria.
     
+    Handles complex naming scheme where:
+    - Metadata has SampleID column with patient names
+    - FASTA files are named like {patient}_{binner}_{bin_identifier}.fa
+    - ANI map maps bin identifiers to species
+    
     Args:
-        metadata_fp: Path to metadata TSV file containing sample information
-        ani_map_fp: Path to ANI mapping TSV file with species->sample assignments
+        metadata_fp: Path to metadata TSV file containing patient information
+        ani_map_fp: Path to ANI mapping TSV file with species->bin_identifier assignments
         out_dir: Output directory for filtered phenotype files
         min_n: Minimum number of samples required per species
         max_missing_frac: Maximum fraction of missing values allowed per phenotype
@@ -112,20 +133,38 @@ def filter_metadata_per_species(
         Dictionary mapping species names to lists of (variable, type, filepath) tuples
         
     Raises:
-        RuntimeError: If metadata file doesn't contain 'sample' column
+        RuntimeError: If metadata file doesn't contain 'SampleID' column
     """
     pathlib.Path(out_dir).mkdir(parents=True, exist_ok=True)
-    meta = pd.read_csv(metadata_fp, sep='\t').drop_duplicates(subset=['sample'])
-    if 'sample' not in meta.columns:
-        raise RuntimeError("metadata must contain 'sample' which maps to to the FASTA filename")
-    ani = pd.read_csv(ani_map_fp, sep='\t', names=['species','sample'])
-    df = ani.merge(meta, on='sample', how='inner')
+    
+    # Load metadata and handle flexible column naming
+    meta = pd.read_csv(metadata_fp, sep='\t')
+    cols_map = {c.lower(): c for c in meta.columns}
+    
+    # Find the sample/patient ID column
+    try:
+        sample_col = _pick_col(cols_map, ['sampleid', 'sample', 'patient', 'id'])
+    except KeyError:
+        raise RuntimeError("metadata must contain 'SampleID' or similar column")
+    
+    meta = meta.drop_duplicates(subset=[sample_col])
+    
+    # Load ANI mapping (species -> bin_identifier)
+    ani = pd.read_csv(ani_map_fp, sep='\t', names=['species','bin_identifier'])
+    
+    # Extract patient names from bin identifiers and merge
+    ani['patient'] = ani['bin_identifier'].apply(_extract_patient_from_bin)
+    df = ani.merge(meta, left_on='patient', right_on=sample_col, how='inner')
     out_index = {}
     for species, sub in df.groupby('species', sort=False):
         rows = []
-        usable = [c for c in sub.columns if c not in ('sample','species')]
+        # Exclude system columns from phenotype analysis
+        exclude_cols = {'species', 'bin_identifier', 'patient', sample_col}
+        usable = [c for c in sub.columns if c not in exclude_cols]
+        
         for col in usable:
-            s = sub[['sample', col]].copy()
+            # Use bin_identifier as the sample identifier for phenotype files
+            s = sub[['bin_identifier', col]].copy()
             miss_frac = s[col].isna().mean()
             if miss_frac > max_missing_frac: continue
             s = s.dropna(subset=[col])
@@ -143,7 +182,7 @@ def filter_metadata_per_species(
                 if s[col].dropna().nunique() < min_unique_cont: continue
                 if float(s[col].std(ddof=0)) == 0.0: continue
             p = pathlib.Path(out_dir)/f"{species}__{re.sub(r'[^A-Za-z0-9_.-]+','_',col)}.pheno.tsv"
-            s.rename(columns={col:'phenotype'}).to_csv(p, sep='\t', index=False)
+            s.rename(columns={'bin_identifier': 'sample', col: 'phenotype'}).to_csv(p, sep='\t', index=False)
             rows.append((col, typ, str(p)))
         out_index[species] = rows
         idxp = pathlib.Path(out_dir)/f"{species}.list.tsv"

@@ -49,31 +49,34 @@ So you can immediately see which species × phenotypes show meaningful structure
 ## Inputs
 
 1. **Genomes**: directory of `.fa/.fna/.fasta[.gz]` files.  
-   Basename = sample ID (must match metadata + ANI map).
+   Basename = bin identifier (format: `{patient}_{binner}_{bin_identifier}`).
+   Must match bin identifiers in ANI map.
 
 2. **Metadata file (`metadata.tsv`)**:  
-   - Tab-delimited, must contain `sample` column + any number of phenotype columns.
+   - Tab-delimited, must contain `SampleID` column + any number of phenotype columns.
    - Phenotypes can be binary, categorical, or continuous.
+   - SampleID contains patient names that will be matched to bin identifiers.
 
    Example:
    ```
-   sample    status    age    country
-   S1        case      34     US
-   S2        control   29     US
-   S3        case      37     DE
-   S4        control   31     DE
+   #SampleID    status    age    country
+   Patient1     case      34     US
+   Patient2     control   29     US
+   Patient3     case      37     DE
+   Patient4     control   31     DE
    ```
 
 3. **ANI map (`ani_map.tsv`)**:  
-   - Tab-delimited, two columns: `species<TAB>sample`
-   - Defines the species bin for each sample.
+   - Tab-delimited, two columns: `species<TAB>bin_identifier`
+   - Defines the species bin for each bin identifier.
+   - Bin identifiers should match FASTA file basenames.
 
    Example:
    ```
-   spA    S1
-   spA    S2
-   spA    S3
-   spA    S4
+   spA    Patient1_metabat_001
+   spA    Patient1_metabat_002
+   spA    Patient2_metabat_001
+   spA    Patient2_metabat_003
    ```
 
 ---

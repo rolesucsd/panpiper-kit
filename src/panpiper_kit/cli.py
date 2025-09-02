@@ -94,8 +94,8 @@ def main() -> None:
         description='ANI-split Mash lineage tests + per-species unitig GWAS (parallel)'
     )
     ap.add_argument('--genomes', required=True, help='directory of FASTA files')
-    ap.add_argument('--metadata', required=True)
-    ap.add_argument('--ani-map', required=True, help='TSV with cluster/species<TAB>sample (basename of FASTA file)')
+    ap.add_argument('--metadata', required=True, help='TSV with SampleID column and phenotype data')
+    ap.add_argument('--ani-map', required=True, help='TSV with cluster/species<TAB>bin_identifier (from FASTA basename)')
     ap.add_argument('--out', required=True, help='output directory')
     ap.add_argument('--checkm', default=None, help='CheckM/quality TSV (columns like sample/bin/genome, completeness/comp, contamination/contam)')
     ap.add_argument('--comp-min', type=float, default=80.0, help='minimum completeness to keep (default 80.0)')
