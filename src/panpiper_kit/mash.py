@@ -1,7 +1,20 @@
-import os, pandas as pd, numpy as np, pathlib
+import os
+import pathlib
+from typing import List
+
+import pandas as pd
+import numpy as np
 from .files import run, ensure_dir
 
-def _square_from_pairs(pairs_tsv: str, out_tsv: str):
+
+def _square_from_pairs(pairs_tsv: str, out_tsv: str) -> None:
+    """
+    Convert Mash pairwise distance output to square distance matrix.
+    
+    Args:
+        pairs_tsv: Input file with pairwise Mash distances
+        out_tsv: Output file for square distance matrix
+    """
     df = pd.read_csv(pairs_tsv, sep='\t', header=None, names=['q','r','dist','p','shared'])
     mat = df.pivot_table(index='q', columns='r', values='dist')
     idx = sorted(set(mat.index)|set(mat.columns))
@@ -11,7 +24,20 @@ def _square_from_pairs(pairs_tsv: str, out_tsv: str):
     mat.columns=[os.path.basename(i) for i in mat.columns]
     mat.to_csv(out_tsv, sep='\t')
 
-def mash_within_species(fasta_paths: list[str], out_dir: str, k: int, s: int, threads: int) -> str:
+def mash_within_species(fasta_paths: List[str], out_dir: str, k: int, s: int, threads: int) -> str:
+    """
+    Calculate Mash distances within a species using provided FASTA files.
+    
+    Args:
+        fasta_paths: List of paths to FASTA files for this species
+        out_dir: Output directory for Mash files
+        k: K-mer size for Mash sketching
+        s: Sketch size for Mash
+        threads: Number of threads to use
+        
+    Returns:
+        Path to the generated Mash distance matrix TSV file
+    """
     ensure_dir(out_dir)
     ref_list = os.path.join(out_dir, 'refs.txt')
     with open(ref_list,'w') as fh:
