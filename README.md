@@ -49,7 +49,7 @@ So you can immediately see which species × phenotypes show meaningful structure
 ## Inputs
 
 1. **Genomes**: directory of `.fa/.fna/.fasta[.gz]` files.  
-   Basename = bin identifier (format: `{patient}_{binner}_{bin_identifier}`).
+   Basename = bin identifier (supports formats like `{patient}_{binner}_{bin_identifier}` or `{patient}.{id}_{binner}_{bin_identifier}`).
    Must match bin identifiers in ANI map.
 
 2. **Metadata file (`metadata.tsv`)**:  
@@ -75,8 +75,8 @@ So you can immediately see which species × phenotypes show meaningful structure
    ```
    spA    Patient1_metabat_001
    spA    Patient1_metabat_002
-   spA    Patient2_metabat_001
-   spA    Patient2_metabat_003
+   spA    10317.X00179178_CONCOCT_bin.40
+   spA    10317.X00179178_CONCOCT_bin.41
    ```
 
 ---

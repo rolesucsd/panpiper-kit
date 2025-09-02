@@ -32,8 +32,13 @@ def _extract_patient_from_bin(bin_name: str) -> str:
     """
     Extract patient name from bin identifier.
     
-    Expected format: {patient}_{binner}_{bin_identifier}
-    Returns the patient name (first part before first underscore).
+    Handles multiple formats:
+    - {patient}_{binner}_{bin_identifier} -> returns {patient}
+    - {patient}.{id}_{binner}_{bin_identifier} -> returns {patient}.{id}
+    
+    Examples:
+    - Patient1_metabat_001 -> Patient1
+    - 10317.X00179178_CONCOCT_bin.40 -> 10317.X00179178
     
     Args:
         bin_name: Bin identifier string
@@ -41,7 +46,18 @@ def _extract_patient_from_bin(bin_name: str) -> str:
     Returns:
         Patient name extracted from bin identifier
     """
-    return bin_name.split('_')[0]
+    # Split by underscore
+    parts = bin_name.split('_')
+    
+    # If we have at least 2 parts, the patient is everything before the last 2 parts
+    # This handles both formats:
+    # - Patient1_metabat_001 -> Patient1
+    # - 10317.X00179178_CONCOCT_bin.40 -> 10317.X00179178
+    if len(parts) >= 2:
+        return '_'.join(parts[:-2])
+    else:
+        # Fallback: if only one part, return the whole thing
+        return bin_name
 
 def filter_by_checkm(s2p: Dict[str, str], checkm_fp: str, comp_min: float, cont_max: float) -> Dict[str, str]:
     """
@@ -115,7 +131,7 @@ def filter_metadata_per_species(
     This function processes metadata and ANI mapping files to create filtered
     phenotype files for each species that meet the specified criteria.
     
-    Handles complex naming scheme where:
+    Handles naming scheme where:
     - Metadata has SampleID column with patient names
     - FASTA files are named like {patient}_{binner}_{bin_identifier}.fa
     - ANI map maps bin identifiers to species
