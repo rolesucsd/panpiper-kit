@@ -79,7 +79,7 @@ def filter_by_checkm(s2p: Dict[str, str], checkm_fp: str, comp_min: float, cont_
     Raises:
         KeyError: If required columns are not found in CheckM file
     """
-    df = pd.read_csv(checkm_fp, sep="\t", dtype=str)
+    df = pd.read_csv(checkm_fp, sep="\t", dtype=str, low_memory=False)
     if df.empty:
         return {}
 
@@ -154,7 +154,7 @@ def filter_metadata_per_species(
     pathlib.Path(out_dir).mkdir(parents=True, exist_ok=True)
     
     # Load metadata and handle flexible column naming
-    meta = pd.read_csv(metadata_fp, sep='\t')
+    meta = pd.read_csv(metadata_fp, sep='\t', low_memory=False)
     cols_map = {c.lower(): c for c in meta.columns}
     
     # Find the sample/patient ID column
