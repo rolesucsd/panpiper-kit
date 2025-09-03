@@ -228,12 +228,16 @@ def _worker(
             # GWAS for binary/continuous
             if typ in ('binary','continuous'):
                 out_fp = assoc_dir/f'{species}__{var}.pyseer.tsv'
-                cmd = (
-                    f'pyseer --phenotypes "{pheno_tsv}" '
-                    f'--kmers "{uc_pyseer}" --uncompressed '
-                    f'--min-af {args.maf} --cpu {t} --no-distances > "{out_fp}"'
-                )
-                run(['bash','-lc', cmd])
+                # (no shell; capture stdout directly)
+                import subprocess
+                with open(out_fp, 'w') as fh:
+                    subprocess.check_call(
+                        ['pyseer',
+                         '--phenotypes', pheno_tsv,
+                         '--kmers', uc_pyseer, '--uncompressed',
+                         '--min-af', str(args.maf), '--cpu', str(t), '--no-distances'],
+                        stdout=fh
+                    )
                 add_bh(str(out_fp), str(assoc_dir/f'{species}__{var}.pyseer.fdr.tsv'))
         
         # Log successful completion
