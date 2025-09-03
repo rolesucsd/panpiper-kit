@@ -99,6 +99,67 @@ def load_completed_species(progress_file: pathlib.Path) -> set:
     
     return completed
 
+
+def are_phenotype_files_complete(species: str, phenos_dir: pathlib.Path) -> bool:
+    """
+    Check if all phenotype files for a species exist based on the list.tsv manifest.
+    
+    Args:
+        species: Species name to check
+        phenos_dir: Directory containing phenotype files and list.tsv manifests
+        
+    Returns:
+        True if all phenotype files exist as specified in the manifest, False otherwise
+    """
+    list_file = phenos_dir / f"{species}.list.tsv"
+    if not list_file.exists():
+        return False
+    
+    try:
+        # Read the manifest
+        df = pd.read_csv(list_file, sep='\t')
+        
+        # Check each phenotype file exists
+        for _, row in df.iterrows():
+            pheno_file = pathlib.Path(row['pheno_tsv'])
+            if not pheno_file.exists():
+                return False
+        
+        return True
+    except Exception:
+        # If we can't read the manifest, assume incomplete
+        return False
+
+
+def load_phenotype_manifest(phenos_dir: pathlib.Path) -> Dict[str, List[Tuple[str, str, str]]]:
+    """
+    Load phenotype information from existing list.tsv manifest files.
+    
+    Args:
+        phenos_dir: Directory containing phenotype files and list.tsv manifests
+        
+    Returns:
+        Dictionary mapping species names to lists of (variable, type, filepath) tuples
+    """
+    phenos = {}
+    
+    # Find all list.tsv files
+    for list_file in phenos_dir.glob("*.list.tsv"):
+        species = list_file.stem  # Remove .list.tsv extension
+        
+        try:
+            df = pd.read_csv(list_file, sep='\t')
+            species_phenos = []
+            
+            for _, row in df.iterrows():
+                species_phenos.append((row['variable'], row['type'], row['pheno_tsv']))
+            
+            phenos[species] = species_phenos
+        except Exception as e:
+            print(f"[warning] Could not load phenotype manifest for {species}: {e}")
+    
+    return phenos
+
 # ----- worker -----
 
 def _worker(
@@ -268,16 +329,60 @@ def main() -> None:
         if post_n < pre_n:
             print(f"[note] CheckM filter kept {post_n}/{pre_n} samples.", flush=True)
 
-    # filter metadata per species (uses only remaining samples downstream)
-    phenos = filter_metadata_per_species(
-        metadata_fp=args.metadata, ani_map_fp=args.ani_map, out_dir=str(work/'phenos'),
-        min_n=args.min_n, max_missing_frac=args.max_missing_frac,
-        min_level_n=args.min_level_n, min_unique_cont=args.min_unique_cont
-    )
-
-    # build species -> sample list and run in parallel
+    # Load ANI mapping once
     ani = pd.read_csv(args.ani_map, sep='\t', names=['species','sample']).drop_duplicates()
     species_list = sorted(ani['species'].unique())
+    
+    # Handle phenotype file generation with resume logic
+    phenos_dir = work / 'phenos'
+    phenos_dir.mkdir(parents=True, exist_ok=True)
+    
+    if args.resume and not args.force:
+        # Check if phenotype files are complete for all species
+        
+        # Check which species have complete phenotype files
+        complete_pheno_species = set()
+        incomplete_pheno_species = set()
+        
+        for species in species_list:
+            if are_phenotype_files_complete(species, phenos_dir):
+                complete_pheno_species.add(species)
+            else:
+                incomplete_pheno_species.add(species)
+        
+        if complete_pheno_species:
+            print(f"[info] Found complete phenotype files for {len(complete_pheno_species)} species")
+        
+        if incomplete_pheno_species:
+            print(f"[info] Need to regenerate phenotype files for {len(incomplete_pheno_species)} species")
+            # Only regenerate for incomplete species
+            # Create a temporary ANI map with only incomplete species
+            temp_ani_map = work / 'temp_ani_map.tsv'
+            incomplete_ani = ani[ani['species'].isin(incomplete_pheno_species)]
+            incomplete_ani.to_csv(temp_ani_map, sep='\t', index=False, header=False)
+            
+            # Generate phenotype files for incomplete species only
+            filter_metadata_per_species(
+                metadata_fp=args.metadata, ani_map_fp=str(temp_ani_map), out_dir=str(phenos_dir),
+                min_n=args.min_n, max_missing_frac=args.max_missing_frac,
+                min_level_n=args.min_level_n, min_unique_cont=args.min_unique_cont
+            )
+        
+        # Load all phenotype information (existing + newly generated)
+        phenos = load_phenotype_manifest(phenos_dir)
+        
+    else:
+        # Force mode or no resume - regenerate all phenotype files
+        if args.force:
+            print(f"[info] Force mode: Regenerating all phenotype files")
+        
+        phenos = filter_metadata_per_species(
+            metadata_fp=args.metadata, ani_map_fp=args.ani_map, out_dir=str(phenos_dir),
+            min_n=args.min_n, max_missing_frac=args.max_missing_frac,
+            min_level_n=args.min_level_n, min_unique_cont=args.min_unique_cont
+        )
+
+    # build species -> sample list and run in parallel
     sp_to_samples = {sp: [s for s in ani.loc[ani['species']==sp, 'sample'] if s in s2p] for sp in species_list}
 
     # Handle resume logic
