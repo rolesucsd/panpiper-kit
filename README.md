@@ -56,14 +56,15 @@ So you can immediately see which species × phenotypes show meaningful structure
    - Tab-delimited, must contain `SampleID` column + any number of phenotype columns.
    - Phenotypes can be binary, categorical, or continuous.
    - SampleID contains patient names that will be matched to bin identifiers.
+   - **Automatic cleaning**: Common missing value indicators like "Not collected", "Unknown", "N/A", etc. are automatically converted to NaN.
 
    Example:
    ```
    #SampleID    status    age    country
    Patient1     case      34     US
-   Patient2     control   29     US
-   Patient3     case      37     DE
-   Patient4     control   31     DE
+   Patient2     control   29     Not collected
+   Patient3     case      37     Unknown
+   Patient4     control   31     N/A
    ```
 
 3. **ANI map (`ani_map.tsv`)**:  
@@ -132,6 +133,24 @@ ppk-run   --genomes genomes/   --metadata metadata.tsv   --ani-map ani_map.tsv  
 - `--min-unique-cont` : min unique values required for continuous phenotypes (default 6).
 - `--perms` : number of permutations for PERMANOVA/Mantel (default 999).
 - `--kmer` : unitig k-mer size (default 31).
+- `--missing-values` : additional missing value indicators to treat as NaN (space-separated).
+
+### Metadata cleaning
+
+The toolkit automatically converts common missing value indicators to NaN to prevent spurious categories:
+
+**Default missing indicators** (case-insensitive):
+- `not collected`, `not available`, `unknown`
+- `n/a`, `na`, `none`, `missing`
+- `not specified`, `not provided`, `not reported`
+- `not applicable`, `not determined`, `not tested`, `not done`
+- `pending`, `tbd`, `to be determined`
+- `not recorded`, `not documented`, `not assessed`, `not evaluated`
+
+**Custom missing values**:
+```bash
+ppk-run --missing-values "custom_value1" "custom_value2" --genomes genomes/ --metadata metadata.tsv --ani-map ani_map.tsv --out results/
+```
 
 ---
 
