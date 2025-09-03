@@ -210,7 +210,6 @@ def filter_metadata_per_species(
     meta = meta.drop_duplicates(subset=[sample_col])
     
     # Clean metadata values - convert "missing" indicators to NaN
-    print(f"[info] Cleaning metadata values (converting missing indicators to NaN)")
     for col in meta.columns:
         if col != sample_col:  # Don't clean the sample ID column
             meta[col] = _clean_metadata_values(meta[col], custom_missing_values)

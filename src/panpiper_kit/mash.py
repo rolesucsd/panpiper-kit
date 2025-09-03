@@ -1,10 +1,13 @@
 import os
 import pathlib
+import logging
 from typing import List
 
 import pandas as pd
 import numpy as np
 from .files import run, ensure_dir
+
+logger = logging.getLogger(__name__)
 
 
 def _square_from_pairs(pairs_tsv: str, out_tsv: str) -> None:
@@ -48,9 +51,7 @@ def mash_within_species(fasta_paths: List[str], out_dir: str, k: int, s: int, th
     Returns:
         Path to the generated Mash distance matrix TSV file
     """
-    print(f"[DEBUG] mash_within_species: {len(fasta_paths)} FASTA files")
-    print(f"[DEBUG] Output directory: {out_dir}")
-    print(f"[DEBUG] Parameters: k={k}, s={s}, threads={threads}")
+    logger.info(f"Computing Mash distances for {len(fasta_paths)} FASTA files")
     
     ensure_dir(out_dir)
     ref_list = os.path.join(out_dir, 'refs.txt')
@@ -58,30 +59,26 @@ def mash_within_species(fasta_paths: List[str], out_dir: str, k: int, s: int, th
         fh.write('\n'.join(fasta_paths))
     msh = os.path.join(out_dir, 'genomes.msh')
     
-    print(f"[DEBUG] Running mash sketch...")
+    # Run mash sketch
     run(['mash','sketch','-k',str(k),'-s',str(s),'-p',str(threads),'-l',ref_list,'-o',msh[:-4]],
         log=os.path.join(out_dir,'mash_sketch.log'))
     
     out = os.path.join(out_dir,'mash.tsv')
     # Always use manual conversion to ensure proper sample IDs
     # square_mash collapses sample IDs to basename, so we avoid it
-    print(f"[DEBUG] Generating pairwise distances for manual conversion...")
     pairs = os.path.join(out_dir,'mash_pairs.tsv')
     run(['mash','dist','-p',str(threads),msh,msh], log=pairs)
-    print(f"[DEBUG] Running _square_from_pairs on {pairs}")
     _square_from_pairs(pairs, out)
     
     # Clean up pairs file
     if os.path.exists(pairs):
         os.remove(pairs)
-        print(f"[DEBUG] Cleaned up pairs file")
     
-    print(f"[DEBUG] Reading and processing distance matrix: {out}")
+    # Symmetrize and zero diagonal
     D = pd.read_csv(out, sep='\t', index_col=0)
-    print(f"[DEBUG] Original matrix shape: {D.shape}")
-    print(f"[DEBUG] Sample IDs: {list(D.index)[:5]}...")
-    
-    D = (D + D.T)/2; import numpy as _np; _np.fill_diagonal(D.values, 0.0)
+    D = (D + D.T)/2
+    np.fill_diagonal(D.values, 0.0)
     D.to_csv(out, sep='\t')
-    print(f"[DEBUG] Final matrix shape: {D.shape}")
+    
+    logger.info(f"Mash distance matrix computed: {D.shape[0]}x{D.shape[1]}")
     return out

@@ -1,4 +1,5 @@
 import argparse
+import logging
 import pathlib
 import pandas as pd
 import os
@@ -12,6 +13,10 @@ from .mash import mash_within_species
 from .assoc import distance_assoc_one, fast_distance_tests
 from .gwas import ensure_unitigs
 from .fdr import add_bh
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 # ----- progress tracking -----
 
@@ -142,32 +147,28 @@ def load_phenotype_manifest(phenos_dir: pathlib.Path) -> Dict[str, List[Tuple[st
     """
     phenos = {}
     
-    print(f"[DEBUG] Loading phenotype manifests from: {phenos_dir}")
+    logger.info(f"Loading phenotype manifests from: {phenos_dir}")
     
     # Find all list.tsv files
     list_files = list(phenos_dir.glob("*.list.tsv"))
-    print(f"[DEBUG] Found {len(list_files)} list.tsv files")
+    logger.info(f"Found {len(list_files)} list.tsv files")
     
     for list_file in list_files:
         # Remove .list.tsv extension properly
         species = list_file.name.replace('.list.tsv', '')
-        print(f"[DEBUG] Processing manifest for species: {species} from: {list_file}")
-        
         try:
             df = pd.read_csv(list_file, sep='\t')
-            print(f"[DEBUG] Manifest has {len(df)} phenotype entries")
             species_phenos = []
             
             for _, row in df.iterrows():
                 species_phenos.append((row['variable'], row['type'], row['pheno_tsv']))
             
             phenos[species] = species_phenos
-            print(f"[DEBUG] Loaded {len(species_phenos)} phenotypes for {species}")
+            logger.debug(f"Loaded {len(species_phenos)} phenotypes for {species}")
         except Exception as e:
-            print(f"[warning] Could not load phenotype manifest for {species}: {e}")
+            logger.warning(f"Could not load phenotype manifest for {species}: {e}")
     
-    print(f"[DEBUG] Total species with phenotypes: {len(phenos)}")
-    print(f"[DEBUG] Species names: {list(phenos.keys())[:5]}...")
+    logger.info(f"Total species with phenotypes: {len(phenos)}")
     return phenos
 
 # ----- worker -----
@@ -183,24 +184,11 @@ def _worker(
     unitig_dir: pathlib.Path,
     progress_file: pathlib.Path
 ) -> pd.DataFrame:
-    print(f"[DEBUG] ===== Starting processing for species: {species} =====")
-    print(f"[DEBUG] Available samples in s2p: {len(s2p)}")
-    print(f"[DEBUG] Available phenotypes: {len(phenos)}")
-    print(f"[DEBUG] Looking for species: '{species}'")
-    print(f"[DEBUG] Available species in phenos: {list(phenos.keys())[:10]}...")
+    logger.info(f"Starting processing for species: {species}")
     
-    if species in phenos:
-        print(f"[DEBUG] Phenotypes for {species}: {len(phenos[species])}")
-        for i, (var, typ, path) in enumerate(phenos[species]):
-            print(f"  {i+1}. {var} ({typ}) -> {path}")
-    else:
-        print(f"[DEBUG] WARNING: No phenotypes found for species {species}")
-        # Check for similar species names
-        similar = [s for s in phenos.keys() if species in s or s in species]
-        if similar:
-            print(f"[DEBUG] Similar species names found: {similar[:5]}")
-        else:
-            print(f"[DEBUG] No similar species names found")
+    if species not in phenos:
+        logger.warning(f"No phenotypes found for species {species}")
+        return pd.DataFrame(columns=['species','metadata','test','stat','pvalue','n_samples'])
     """
     Worker function for parallel processing of species-specific analyses.
     
@@ -232,91 +220,54 @@ def _worker(
         sp_out = mash_dir/species
         sp_out.mkdir(parents=True, exist_ok=True)
         
-        print(f"[DEBUG] Processing species: {species}")
-        print(f"[DEBUG] Found {len(paths)} FASTA files for this species")
-        print(f"[DEBUG] Sample paths: {paths[:3]}...")  # Show first 3 paths
+        logger.info(f"Processing {len(paths)} FASTA files for species {species}")
         
         # Mash within species
-        print(f"[DEBUG] Computing Mash distances (k={args.mash_k}, s={args.mash_s})")
         mash_tsv = mash_within_species(paths, str(sp_out), k=args.mash_k, s=args.mash_s, threads=t)
-        print(f"[DEBUG] Mash distances computed: {mash_tsv}")
         
         # refs for unitigs (once)
         ref_txt = sp_out/'refs.txt'
         if not ref_txt.exists():
-            print(f"[DEBUG] Creating refs.txt with {len(paths)} paths")
             with open(ref_txt,'w') as fh: fh.write('\n'.join(paths))
-        else:
-            print(f"[DEBUG] Using existing refs.txt")
         
-        print(f"[DEBUG] Generating unitigs (kmer={args.kmer})")
         uc_pyseer = ensure_unitigs(str(ref_txt), str(unitig_dir/species), kmer=args.kmer, threads=t)
-        print(f"[DEBUG] Unitigs generated: {uc_pyseer}")
 
         rows = []
         phenotypes = phenos.get(species, [])
-        print(f"[DEBUG] Found {len(phenotypes)} phenotypes for {species}")
+        logger.info(f"Found {len(phenotypes)} phenotypes for {species}")
         
-        for i, (var, typ, pheno_tsv) in enumerate(phenotypes):
-            print(f"[DEBUG] Processing phenotype {i+1}/{len(phenotypes)}: {var} ({typ})")
-            print(f"[DEBUG] Phenotype file: {pheno_tsv}")
+        for var, typ, pheno_tsv in phenotypes:
+            logger.info(f"Processing phenotype: {var} ({typ})")
             
             # Check if phenotype file exists
             if not os.path.exists(pheno_tsv):
-                print(f"[DEBUG] ERROR: Phenotype file does not exist: {pheno_tsv}")
-                continue
-            
-            # Check phenotype file content
-            try:
-                pheno_df = pd.read_csv(pheno_tsv, sep='\t')
-                print(f"[DEBUG] Phenotype file shape: {pheno_df.shape}")
-                print(f"[DEBUG] Phenotype columns: {list(pheno_df.columns)}")
-                if 'phenotype' in pheno_df.columns:
-                    print(f"[DEBUG] Phenotype value counts: {pheno_df['phenotype'].value_counts().head()}")
-            except Exception as e:
-                print(f"[DEBUG] ERROR: Could not read phenotype file: {e}")
+                logger.error(f"Phenotype file does not exist: {pheno_tsv}")
                 continue
             
             # distance test
-            print(f"[DEBUG] Running distance association test ({args.tests} mode)")
             if args.tests == 'exact':
                 df = distance_assoc_one(str(mash_tsv), pheno_tsv, typ, args.perms)
             else:
                 df = fast_distance_tests(str(mash_tsv), pheno_tsv, typ, max_axes=args.max_axes)
             
-            print(f"[DEBUG] Distance test result: {df.iloc[0].to_dict()}")
             df['species'] = species
             df['metadata'] = var
             out_d = assoc_dir/f'{species}__{var}.dist_assoc.tsv'
             df.to_csv(out_d, sep='\t', index=False)
-            print(f"[DEBUG] Distance association saved to: {out_d}")
             rows.append(df)
 
             # GWAS for binary/continuous
             if typ in ('binary','continuous'):
-                print(f"[DEBUG] Starting pyseer GWAS for {species}__{var} ({typ})")
-                print(f"[DEBUG] Input files:")
-                print(f"  phenotypes: {pheno_tsv}")
-                print(f"  kmers: {uc_pyseer}")
-                print(f"  maf: {args.maf}, threads: {t}")
+                logger.info(f"Running pyseer GWAS for {species}__{var} ({typ})")
                 
                 out_fp = assoc_dir/f'{species}__{var}.pyseer.tsv'
-                print(f"[DEBUG] Output file: {out_fp}")
                 
                 # Check if input files exist
-                if not os.path.exists(pheno_tsv):
-                    print(f"[DEBUG] ERROR: Phenotype file does not exist: {pheno_tsv}")
-                    continue
                 if not os.path.exists(uc_pyseer):
-                    print(f"[DEBUG] ERROR: Unitig file does not exist: {uc_pyseer}")
+                    logger.error(f"Unitig file does not exist: {uc_pyseer}")
                     continue
                 
-                # Check file sizes
-                pheno_size = os.path.getsize(pheno_tsv)
-                unitig_size = os.path.getsize(uc_pyseer)
-                print(f"[DEBUG] File sizes: phenotype={pheno_size} bytes, unitigs={unitig_size} bytes")
-                
-                # (no shell; capture stdout directly)
+                # Run pyseer
                 import subprocess
                 try:
                     with open(out_fp, 'w') as fh:
@@ -324,35 +275,21 @@ def _worker(
                                '--phenotypes', pheno_tsv,
                                '--kmers', uc_pyseer, '--uncompressed',
                                '--min-af', str(args.maf), '--cpu', str(t), '--no-distances']
-                        print(f"[DEBUG] Running command: {' '.join(cmd)}")
                         subprocess.check_call(cmd, stdout=fh)
                     
                     # Check if output was created and has content
-                    if os.path.exists(out_fp):
-                        output_size = os.path.getsize(out_fp)
-                        print(f"[DEBUG] Pyseer completed successfully, output size: {output_size} bytes")
-                        if output_size > 0:
-                            # Show first few lines of output
-                            with open(out_fp, 'r') as fh:
-                                lines = fh.readlines()[:5]
-                                print(f"[DEBUG] Output preview (first {len(lines)} lines):")
-                                for i, line in enumerate(lines):
-                                    print(f"  {i+1}: {line.strip()}")
-                        else:
-                            print(f"[DEBUG] WARNING: Output file is empty!")
+                    if os.path.exists(out_fp) and os.path.getsize(out_fp) > 0:
+                        logger.info(f"Pyseer completed successfully for {species}__{var}")
+                        add_bh(str(out_fp), str(assoc_dir/f'{species}__{var}.pyseer.fdr.tsv'))
                     else:
-                        print(f"[DEBUG] ERROR: Output file was not created!")
+                        logger.warning(f"Pyseer output is empty for {species}__{var}")
                         
                 except subprocess.CalledProcessError as e:
-                    print(f"[DEBUG] ERROR: Pyseer failed with return code {e.returncode}")
-                    print(f"[DEBUG] Command that failed: {' '.join(cmd)}")
+                    logger.error(f"Pyseer failed for {species}__{var}: return code {e.returncode}")
                     continue
                 except Exception as e:
-                    print(f"[DEBUG] ERROR: Unexpected error running pyseer: {e}")
+                    logger.error(f"Unexpected error running pyseer for {species}__{var}: {e}")
                     continue
-                
-                print(f"[DEBUG] Adding FDR correction")
-                add_bh(str(out_fp), str(assoc_dir/f'{species}__{var}.pyseer.fdr.tsv'))
         
         # Log successful completion
         log_progress(species, 'completed', progress_file)
@@ -424,13 +361,13 @@ def main() -> None:
     # Progress tracking
     progress_file = OUT / 'progress.log'
     
-    # Print run information
-    print(f"[info] Output directory: {OUT}")
-    print(f"[info] Progress log: {progress_file}")
+    # Log run information
+    logger.info(f"Output directory: {OUT}")
+    logger.info(f"Progress log: {progress_file}")
     if args.resume and not args.force:
-        print(f"[info] Resume mode: Will skip completed species")
+        logger.info("Resume mode: Will skip completed species")
     elif args.force:
-        print(f"[info] Force mode: Will re-run all species")
+        logger.info("Force mode: Will re-run all species")
 
     # enumerate FASTAs (basename == sample id)
     s2p = list_fastas(args.genomes)
@@ -441,10 +378,10 @@ def main() -> None:
         s2p = filter_by_checkm(s2p, args.checkm, args.comp_min, args.cont_max)
         post_n = len(s2p)
         if post_n == 0:
-            print(f"[fatal] CheckM filter removed all samples (comp_min={args.comp_min}, cont_max={args.cont_max}).", flush=True)
+            logger.fatal(f"CheckM filter removed all samples (comp_min={args.comp_min}, cont_max={args.cont_max})")
             return
         if post_n < pre_n:
-            print(f"[note] CheckM filter kept {post_n}/{pre_n} samples.", flush=True)
+            logger.info(f"CheckM filter kept {post_n}/{pre_n} samples")
 
     # Load ANI mapping once
     ani = pd.read_csv(args.ani_map, sep='\t', names=['species','sample']).drop_duplicates()
@@ -468,10 +405,10 @@ def main() -> None:
                 incomplete_pheno_species.add(species)
         
         if complete_pheno_species:
-            print(f"[info] Found complete phenotype files for {len(complete_pheno_species)} species")
+            logger.info(f"Found complete phenotype files for {len(complete_pheno_species)} species")
         
         if incomplete_pheno_species:
-            print(f"[info] Need to regenerate phenotype files for {len(incomplete_pheno_species)} species")
+            logger.info(f"Need to regenerate phenotype files for {len(incomplete_pheno_species)} species")
             # Only regenerate for incomplete species
             # Create a temporary ANI map with only incomplete species
             temp_ani_map = work / 'temp_ani_map.tsv'
@@ -492,7 +429,7 @@ def main() -> None:
     else:
         # Force mode or no resume - regenerate all phenotype files
         if args.force:
-            print(f"[info] Force mode: Regenerating all phenotype files")
+            logger.info("Force mode: Regenerating all phenotype files")
         
         phenos = filter_metadata_per_species(
             metadata_fp=args.metadata, ani_map_fp=args.ani_map, out_dir=str(phenos_dir),
@@ -507,7 +444,7 @@ def main() -> None:
     # Handle resume logic
     if args.resume and not args.force:
         completed_species = load_completed_species(progress_file)
-        print(f"[info] Found {len(completed_species)} previously completed species in progress log")
+        logger.info(f"Found {len(completed_species)} previously completed species in progress log")
         
         # Check which species are actually complete (file-based verification)
         actually_complete = set()
@@ -515,17 +452,17 @@ def main() -> None:
             if is_species_complete(sp, phenos, mash_dir, assoc_dir, unitig_dir):
                 actually_complete.add(sp)
             else:
-                print(f"[info] Species {sp} marked as complete but files missing, will re-run")
+                logger.info(f"Species {sp} marked as complete but files missing, will re-run")
         
         # Filter out completed species
         remaining_species = {sp: sams for sp, sams in sp_to_samples.items() 
                            if sp not in actually_complete and len(sams) >= args.min_n}
-        print(f"[info] Will process {len(remaining_species)} remaining species")
+        logger.info(f"Will process {len(remaining_species)} remaining species")
     else:
         remaining_species = {sp: sams for sp, sams in sp_to_samples.items() 
                            if len(sams) >= args.min_n}
         if args.force:
-            print(f"[info] Force mode: will re-run all {len(remaining_species)} species")
+            logger.info(f"Force mode: will re-run all {len(remaining_species)} species")
 
     results = []
     with ProcessPoolExecutor(max_workers=args.workers) as ex:
@@ -553,12 +490,12 @@ def main() -> None:
                         df = pd.read_csv(dist_file, sep='\t')
                         results.append(df)
                     except Exception as e:
-                        print(f"[warning] Could not load existing results for {sp}__{var}: {e}")
+                        logger.warning(f"Could not load existing results for {sp}__{var}: {e}")
 
     if results:
         master = OUT/'assoc'/'mash_lineage_assoc_by_species.tsv'
         pd.concat(results, ignore_index=True).to_csv(master, sep='\t', index=False)
         add_bh(str(master), str(OUT/'assoc'/'mash_lineage_assoc_by_species.fdr.tsv'))
-        print(f"[info] Final results written to {master}")
+        logger.info(f"Final results written to {master}")
     else:
-        print("[info] No results to write")
+        logger.info("No results to write")
