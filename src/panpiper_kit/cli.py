@@ -173,6 +173,15 @@ def _worker(
     unitig_dir: pathlib.Path,
     progress_file: pathlib.Path
 ) -> pd.DataFrame:
+    print(f"[DEBUG] ===== Starting processing for species: {species} =====")
+    print(f"[DEBUG] Available samples in s2p: {len(s2p)}")
+    print(f"[DEBUG] Available phenotypes: {len(phenos)}")
+    if species in phenos:
+        print(f"[DEBUG] Phenotypes for {species}: {len(phenos[species])}")
+        for i, (var, typ, path) in enumerate(phenos[species]):
+            print(f"  {i+1}. {var} ({typ}) -> {path}")
+    else:
+        print(f"[DEBUG] WARNING: No phenotypes found for species {species}")
     """
     Worker function for parallel processing of species-specific analyses.
     
@@ -204,40 +213,126 @@ def _worker(
         sp_out = mash_dir/species
         sp_out.mkdir(parents=True, exist_ok=True)
         
+        print(f"[DEBUG] Processing species: {species}")
+        print(f"[DEBUG] Found {len(paths)} FASTA files for this species")
+        print(f"[DEBUG] Sample paths: {paths[:3]}...")  # Show first 3 paths
+        
         # Mash within species
+        print(f"[DEBUG] Computing Mash distances (k={args.mash_k}, s={args.mash_s})")
         mash_tsv = mash_within_species(paths, str(sp_out), k=args.mash_k, s=args.mash_s, threads=t)
+        print(f"[DEBUG] Mash distances computed: {mash_tsv}")
+        
         # refs for unitigs (once)
         ref_txt = sp_out/'refs.txt'
         if not ref_txt.exists():
+            print(f"[DEBUG] Creating refs.txt with {len(paths)} paths")
             with open(ref_txt,'w') as fh: fh.write('\n'.join(paths))
+        else:
+            print(f"[DEBUG] Using existing refs.txt")
+        
+        print(f"[DEBUG] Generating unitigs (kmer={args.kmer})")
         uc_pyseer = ensure_unitigs(str(ref_txt), str(unitig_dir/species), kmer=args.kmer, threads=t)
+        print(f"[DEBUG] Unitigs generated: {uc_pyseer}")
 
         rows = []
-        for (var, typ, pheno_tsv) in phenos.get(species, []):
+        phenotypes = phenos.get(species, [])
+        print(f"[DEBUG] Found {len(phenotypes)} phenotypes for {species}")
+        
+        for i, (var, typ, pheno_tsv) in enumerate(phenotypes):
+            print(f"[DEBUG] Processing phenotype {i+1}/{len(phenotypes)}: {var} ({typ})")
+            print(f"[DEBUG] Phenotype file: {pheno_tsv}")
+            
+            # Check if phenotype file exists
+            if not os.path.exists(pheno_tsv):
+                print(f"[DEBUG] ERROR: Phenotype file does not exist: {pheno_tsv}")
+                continue
+            
+            # Check phenotype file content
+            try:
+                pheno_df = pd.read_csv(pheno_tsv, sep='\t')
+                print(f"[DEBUG] Phenotype file shape: {pheno_df.shape}")
+                print(f"[DEBUG] Phenotype columns: {list(pheno_df.columns)}")
+                if 'phenotype' in pheno_df.columns:
+                    print(f"[DEBUG] Phenotype value counts: {pheno_df['phenotype'].value_counts().head()}")
+            except Exception as e:
+                print(f"[DEBUG] ERROR: Could not read phenotype file: {e}")
+                continue
+            
             # distance test
+            print(f"[DEBUG] Running distance association test ({args.tests} mode)")
             if args.tests == 'exact':
                 df = distance_assoc_one(str(mash_tsv), pheno_tsv, typ, args.perms)
             else:
                 df = fast_distance_tests(str(mash_tsv), pheno_tsv, typ, max_axes=args.max_axes)
+            
+            print(f"[DEBUG] Distance test result: {df.iloc[0].to_dict()}")
             df['species'] = species
             df['metadata'] = var
             out_d = assoc_dir/f'{species}__{var}.dist_assoc.tsv'
             df.to_csv(out_d, sep='\t', index=False)
+            print(f"[DEBUG] Distance association saved to: {out_d}")
             rows.append(df)
 
             # GWAS for binary/continuous
             if typ in ('binary','continuous'):
+                print(f"[DEBUG] Starting pyseer GWAS for {species}__{var} ({typ})")
+                print(f"[DEBUG] Input files:")
+                print(f"  phenotypes: {pheno_tsv}")
+                print(f"  kmers: {uc_pyseer}")
+                print(f"  maf: {args.maf}, threads: {t}")
+                
                 out_fp = assoc_dir/f'{species}__{var}.pyseer.tsv'
+                print(f"[DEBUG] Output file: {out_fp}")
+                
+                # Check if input files exist
+                if not os.path.exists(pheno_tsv):
+                    print(f"[DEBUG] ERROR: Phenotype file does not exist: {pheno_tsv}")
+                    continue
+                if not os.path.exists(uc_pyseer):
+                    print(f"[DEBUG] ERROR: Unitig file does not exist: {uc_pyseer}")
+                    continue
+                
+                # Check file sizes
+                pheno_size = os.path.getsize(pheno_tsv)
+                unitig_size = os.path.getsize(uc_pyseer)
+                print(f"[DEBUG] File sizes: phenotype={pheno_size} bytes, unitigs={unitig_size} bytes")
+                
                 # (no shell; capture stdout directly)
                 import subprocess
-                with open(out_fp, 'w') as fh:
-                    subprocess.check_call(
-                        ['pyseer',
-                         '--phenotypes', pheno_tsv,
-                         '--kmers', uc_pyseer, '--uncompressed',
-                         '--min-af', str(args.maf), '--cpu', str(t), '--no-distances'],
-                        stdout=fh
-                    )
+                try:
+                    with open(out_fp, 'w') as fh:
+                        cmd = ['pyseer',
+                               '--phenotypes', pheno_tsv,
+                               '--kmers', uc_pyseer, '--uncompressed',
+                               '--min-af', str(args.maf), '--cpu', str(t), '--no-distances']
+                        print(f"[DEBUG] Running command: {' '.join(cmd)}")
+                        subprocess.check_call(cmd, stdout=fh)
+                    
+                    # Check if output was created and has content
+                    if os.path.exists(out_fp):
+                        output_size = os.path.getsize(out_fp)
+                        print(f"[DEBUG] Pyseer completed successfully, output size: {output_size} bytes")
+                        if output_size > 0:
+                            # Show first few lines of output
+                            with open(out_fp, 'r') as fh:
+                                lines = fh.readlines()[:5]
+                                print(f"[DEBUG] Output preview (first {len(lines)} lines):")
+                                for i, line in enumerate(lines):
+                                    print(f"  {i+1}: {line.strip()}")
+                        else:
+                            print(f"[DEBUG] WARNING: Output file is empty!")
+                    else:
+                        print(f"[DEBUG] ERROR: Output file was not created!")
+                        
+                except subprocess.CalledProcessError as e:
+                    print(f"[DEBUG] ERROR: Pyseer failed with return code {e.returncode}")
+                    print(f"[DEBUG] Command that failed: {' '.join(cmd)}")
+                    continue
+                except Exception as e:
+                    print(f"[DEBUG] ERROR: Unexpected error running pyseer: {e}")
+                    continue
+                
+                print(f"[DEBUG] Adding FDR correction")
                 add_bh(str(out_fp), str(assoc_dir/f'{species}__{var}.pyseer.fdr.tsv'))
         
         # Log successful completion
