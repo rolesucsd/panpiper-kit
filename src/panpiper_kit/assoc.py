@@ -34,6 +34,7 @@ def distance_assoc_one(mash_tsv: str, pheno_tsv: str, typ: str, perms: int) -> p
     Returns:
         Single-row DataFrame with columns: species, metadata, n_samples, test, stat, pvalue, permutations
     """
+    logger.info(f"Starting exact distance association test: {typ} phenotype with {perms} permutations")
     Dm = pd.read_csv(mash_tsv, sep='\t', index_col=0)
     # Ensure labels are consistently strings to avoid alignment/sort issues
     Dm.index = Dm.index.astype(str)
@@ -50,6 +51,7 @@ def distance_assoc_one(mash_tsv: str, pheno_tsv: str, typ: str, perms: int) -> p
     variable = '__'.join(pheno_tsv.split('/')[-1].split('__')[1:]).replace('.pheno.tsv','')
 
     if len(keep) < 4:
+        logger.warning(f"Too few samples ({len(keep)}) for exact distance test, returning NA result")
         return pd.DataFrame([{
             'species': species, 'metadata': variable, 'n_samples': len(keep),
             'test': 'NA', 'stat': np.nan, 'R2': np.nan, 'pvalue': np.nan,
@@ -60,25 +62,31 @@ def distance_assoc_one(mash_tsv: str, pheno_tsv: str, typ: str, perms: int) -> p
     DM = DistanceMatrix(Dm.values, keep)
 
     if typ in ('binary','categorical'):
+        logger.info(f"Running PERMANOVA for {typ} phenotype with {len(keep)} samples")
         grp = ph.set_index('sample').loc[keep, 'phenotype'].astype(str).values
         res = permanova(dm=DM, grouping=grp, permutations=perms)
+        logger.info(f"PERMANOVA result: F={res['test statistic']:.4f}, p={res['p-value']:.4f}")
         row = dict(species=species, metadata=variable, n_samples=len(keep),
                    test='PERMANOVA', stat=float(res['test statistic']),
                    R2=np.nan, pvalue=float(res['p-value']), permutations=perms)
     else:
+        logger.info(f"Running Mantel test for continuous phenotype with {len(keep)} samples")
         v = ph.set_index('sample').loc[keep, 'phenotype']
         # Check for zero variance, handling NaN values properly
         try:
             std_val = v.std(ddof=0)
             if v.dropna().nunique() < 2 or pd.isna(std_val) or float(std_val) == 0.0:
+                logger.warning(f"Zero variance detected in continuous phenotype, returning NA result")
                 row = dict(species=species, metadata=variable, n_samples=len(keep),
                            test='Mantel_spearman', stat=np.nan, R2=np.nan, pvalue=np.nan, permutations=perms)
             else:
                 DX = DistanceMatrix(_cont_distance(v), keep)
                 r, p, n = mantel(DM, DX, method='spearman', permutations=perms, alternative='two-sided')
+                logger.info(f"Mantel test result: r={r:.4f}, p={p:.4f}, n={n}")
                 row = dict(species=species, metadata=variable, n_samples=len(keep),
                            test='Mantel_spearman', stat=float(r), R2=np.nan, pvalue=float(p), permutations=perms)
-        except (ValueError, TypeError):
+        except (ValueError, TypeError) as e:
+            logger.error(f"Error in Mantel test: {e}")
             row = dict(species=species, metadata=variable, n_samples=len(keep),
                        test='Mantel_spearman', stat=np.nan, R2=np.nan, pvalue=np.nan, permutations=perms)
     return pd.DataFrame([row])
@@ -105,6 +113,7 @@ def fast_distance_tests(mash_tsv: str, pheno_tsv: str, typ: str, max_axes: int =
     Returns:
         Single-row DataFrame with columns: n_samples, test, stat, pvalue
     """
+    logger.info(f"Starting fast distance association test: {typ} phenotype with max_axes={max_axes}")
     # Load and symmetrize distances
     Dm = pd.read_csv(mash_tsv, sep='\t', index_col=0)
     # Ensure labels are consistently strings to avoid alignment/sort issues
@@ -115,6 +124,7 @@ def fast_distance_tests(mash_tsv: str, pheno_tsv: str, typ: str, max_axes: int =
     labels = list(Dm.index)
     n = len(labels)
     if n < 4:
+        logger.warning(f"Too few samples ({n}) for fast distance test, returning NA result")
         return pd.DataFrame([{'n_samples': n, 'test': 'FAST', 'stat': np.nan, 'pvalue': np.nan}])
 
     # Align phenotype
@@ -122,6 +132,7 @@ def fast_distance_tests(mash_tsv: str, pheno_tsv: str, typ: str, max_axes: int =
     ph = ph[ph['sample'].isin(labels)].set_index('sample').loc[labels]
     keep_mask = ph['phenotype'].notna().values
     if keep_mask.sum() < 4:
+        logger.warning(f"Too few samples with valid phenotypes ({keep_mask.sum()}) for fast distance test, returning NA result")
         return pd.DataFrame([{'n_samples': int(keep_mask.sum()), 'test': 'FAST', 'stat': np.nan, 'pvalue': np.nan}])
 
     # Subset to non-missing samples consistently
@@ -132,9 +143,10 @@ def fast_distance_tests(mash_tsv: str, pheno_tsv: str, typ: str, max_axes: int =
 
     # PCoA: double-center and eigendecompose
     X_pc, eigvals = _pcoa_scores(D, max_axes=max_axes)
-    logger.info(f"PCoA scores: {X_pc.shape}")
+    logger.info(f"PCoA computed: {X_pc.shape} scores, {len(eigvals)} eigenvalues")
 
     if typ in ('binary','categorical'):
+        logger.info(f"Running fast ANOVA for {typ} phenotype with {n_eff} samples")
         groups = y.astype(str)
         pvals = []
         for a in range(X_pc.shape[1]):
@@ -145,18 +157,22 @@ def fast_distance_tests(mash_tsv: str, pheno_tsv: str, typ: str, max_axes: int =
             fstat, p = f_oneway(*buckets)
             pvals.append(p)
         if not pvals:
+            logger.warning("No valid ANOVA tests for fast distance test, returning NA")
             stat = np.nan; p_comb = np.nan
         else:
             stat = -2.0 * np.sum(np.log(pvals))
             p_comb = 1.0 - chi2.cdf(stat, 2 * len(pvals))
+            logger.info(f"Fast ANOVA result: combined stat={stat:.4f}, p={p_comb:.4f}")
         return pd.DataFrame([{
             'n_samples': n_eff, 'test': 'FAST_ANOVA_PC', 'stat': stat, 'pvalue': p_comb
         }])
     else:
+        logger.info(f"Running fast OLS for continuous phenotype with {n_eff} samples")
         # Continuous: OLS on PCs, F-test
         y = y.astype(float)
         # drop if zero variance
         if np.nanstd(y) == 0.0:
+            logger.warning("Zero variance detected in continuous phenotype for fast test, returning NA")
             return pd.DataFrame([{'n_samples': n_eff, 'test':'FAST_OLS_PC', 'stat': np.nan, 'pvalue': np.nan}])
         X = np.column_stack([np.ones(n_eff), X_pc])  # intercept + PCs
         XtX = X.T @ X
@@ -164,6 +180,7 @@ def fast_distance_tests(mash_tsv: str, pheno_tsv: str, typ: str, max_axes: int =
             beta = np.linalg.solve(XtX, X.T @ y)
         except np.linalg.LinAlgError:
             # fallback: pseudo-inverse
+            logger.info("Using pseudo-inverse for OLS")
             beta = np.linalg.pinv(XtX) @ (X.T @ y)
         yhat = X @ beta
         rss = np.sum((y - yhat)**2)
@@ -172,10 +189,12 @@ def fast_distance_tests(mash_tsv: str, pheno_tsv: str, typ: str, max_axes: int =
         df1 = p
         df2 = n_eff - (p + 1)
         if df2 <= 0 or tss == 0:
+            logger.warning("Invalid degrees of freedom or zero TSS for fast OLS, returning NA")
             return pd.DataFrame([{'n_samples': n_eff, 'test':'FAST_OLS_PC', 'stat': np.nan, 'pvalue': np.nan}])
         R2 = 1 - rss / tss
         F = (R2/df1) / ((1-R2)/df2) if (1-R2) > 0 else np.inf
         pval = 1.0 - f_dist.cdf(F, df1, df2)
+        logger.info(f"Fast OLS result: R2={R2:.4f}, F={F:.4f}, p={pval:.4f}")
         return pd.DataFrame([{'n_samples': n_eff, 'test':'FAST_OLS_PC', 'stat': F, 'pvalue': pval}])
 
 # ---------------------------

@@ -51,9 +51,22 @@ def mash_within_species(fasta_paths: List[str], out_dir: str, k: int, s: int, th
     Returns:
         Path to the generated Mash distance matrix TSV file
     """
+    ensure_dir(out_dir)
+    out = os.path.join(out_dir,'mash.tsv')
+    
+    # Check if output already exists
+    if os.path.exists(out):
+        logger.info(f"Using existing Mash distance matrix: {out}")
+        # Verify the file is valid by reading it
+        try:
+            D = pd.read_csv(out, sep='\t', index_col=0)
+            logger.info(f"Existing Mash distance matrix: {D.shape[0]}x{D.shape[1]}")
+            return out
+        except Exception as e:
+            logger.warning(f"Existing Mash file is corrupted, will recreate: {e}")
+    
     logger.info(f"Computing Mash distances for {len(fasta_paths)} FASTA files")
     
-    ensure_dir(out_dir)
     ref_list = os.path.join(out_dir, 'refs.txt')
     with open(ref_list,'w') as fh:
         fh.write('\n'.join(fasta_paths))
@@ -63,7 +76,6 @@ def mash_within_species(fasta_paths: List[str], out_dir: str, k: int, s: int, th
     run(['mash','sketch','-k',str(k),'-s',str(s),'-p',str(threads),'-l',ref_list,'-o',msh[:-4]],
         log=os.path.join(out_dir,'mash_sketch.log'))
     
-    out = os.path.join(out_dir,'mash.tsv')
     # Always use manual conversion to ensure proper sample IDs
     # square_mash collapses sample IDs to basename, so we avoid it
     pairs = os.path.join(out_dir,'mash_pairs.tsv')

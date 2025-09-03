@@ -338,15 +338,24 @@ def _worker(
             
             # distance test
             if args.tests == 'exact':
+                logger.info(f"Running exact distance tests (PERMANOVA/Mantel) for {species}__{var} ({typ})")
                 df = distance_assoc_one(str(mash_tsv), pheno_tsv, typ, args.perms)
             else:
                 logger.info(f"Running fast distance tests for {species}__{var} ({typ})")
                 df = fast_distance_tests(str(mash_tsv), pheno_tsv, typ, max_axes=args.max_axes)
             
+            # Log the results
+            if df.empty:
+                logger.warning(f"No results from distance test for {species}__{var}")
+                continue
+            
+            logger.info(f"Distance test completed for {species}__{var}: {df.iloc[0].to_dict()}")
+            
             df['species'] = species
             df['metadata'] = var
             out_d = assoc_dir/f'{species}__{var}.dist_assoc.tsv'
             df.to_csv(out_d, sep='\t', index=False)
+            logger.info(f"Distance association results saved to: {out_d}")
             rows.append(df)
 
             # GWAS for binary/continuous
