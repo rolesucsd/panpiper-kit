@@ -48,7 +48,8 @@ def mash_within_species(fasta_paths: List[str], out_dir: str, k: int, s: int, th
     out = os.path.join(out_dir,'mash.tsv')
     # try square_mash
     try:
-        run(['bash','-c', f'mash dist -p {threads} {msh} {msh} | square_mash > {out}'])
+        run(['bash','--noprofile','--norc','-c',
+         f'mash dist -p {threads} {msh} {msh} | square_mash > {out}'])
     except Exception:
         pairs = os.path.join(out_dir,'mash_pairs.tsv')
         run(['mash','dist','-p',str(threads),msh,msh], log=pairs)
