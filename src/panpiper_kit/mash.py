@@ -63,18 +63,18 @@ def mash_within_species(fasta_paths: List[str], out_dir: str, k: int, s: int, th
         log=os.path.join(out_dir,'mash_sketch.log'))
     
     out = os.path.join(out_dir,'mash.tsv')
-    # try square_mash
-    try:
-        print(f"[DEBUG] Trying square_mash...")
-        run(['bash','--noprofile','--norc','-c',
-         f'mash dist -p {threads} {msh} {msh} | square_mash > {out}'])
-        print(f"[DEBUG] square_mash succeeded")
-    except Exception as e:
-        print(f"[DEBUG] square_mash failed: {e}, falling back to manual conversion")
-        pairs = os.path.join(out_dir,'mash_pairs.tsv')
-        run(['mash','dist','-p',str(threads),msh,msh], log=pairs)
-        print(f"[DEBUG] Running _square_from_pairs on {pairs}")
-        _square_from_pairs(pairs, out)
+    # Always use manual conversion to ensure proper sample IDs
+    # square_mash collapses sample IDs to basename, so we avoid it
+    print(f"[DEBUG] Generating pairwise distances for manual conversion...")
+    pairs = os.path.join(out_dir,'mash_pairs.tsv')
+    run(['mash','dist','-p',str(threads),msh,msh], log=pairs)
+    print(f"[DEBUG] Running _square_from_pairs on {pairs}")
+    _square_from_pairs(pairs, out)
+    
+    # Clean up pairs file
+    if os.path.exists(pairs):
+        os.remove(pairs)
+        print(f"[DEBUG] Cleaned up pairs file")
     
     print(f"[DEBUG] Reading and processing distance matrix: {out}")
     D = pd.read_csv(out, sep='\t', index_col=0)
