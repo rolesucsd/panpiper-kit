@@ -12,7 +12,6 @@ from .mash import mash_within_species
 from .assoc import distance_assoc_one, fast_distance_tests
 from .gwas import ensure_unitigs
 from .fdr import add_bh
-from .external import check_perl_dependencies
 
 # ----- progress tracking -----
 
@@ -143,21 +142,31 @@ def load_phenotype_manifest(phenos_dir: pathlib.Path) -> Dict[str, List[Tuple[st
     """
     phenos = {}
     
+    print(f"[DEBUG] Loading phenotype manifests from: {phenos_dir}")
+    
     # Find all list.tsv files
-    for list_file in phenos_dir.glob("*.list.tsv"):
+    list_files = list(phenos_dir.glob("*.list.tsv"))
+    print(f"[DEBUG] Found {len(list_files)} list.tsv files")
+    
+    for list_file in list_files:
         species = list_file.stem  # Remove .list.tsv extension
+        print(f"[DEBUG] Processing manifest for species: {species}")
         
         try:
             df = pd.read_csv(list_file, sep='\t')
+            print(f"[DEBUG] Manifest has {len(df)} phenotype entries")
             species_phenos = []
             
             for _, row in df.iterrows():
                 species_phenos.append((row['variable'], row['type'], row['pheno_tsv']))
             
             phenos[species] = species_phenos
+            print(f"[DEBUG] Loaded {len(species_phenos)} phenotypes for {species}")
         except Exception as e:
             print(f"[warning] Could not load phenotype manifest for {species}: {e}")
     
+    print(f"[DEBUG] Total species with phenotypes: {len(phenos)}")
+    print(f"[DEBUG] Species names: {list(phenos.keys())[:5]}...")
     return phenos
 
 # ----- worker -----
@@ -176,12 +185,21 @@ def _worker(
     print(f"[DEBUG] ===== Starting processing for species: {species} =====")
     print(f"[DEBUG] Available samples in s2p: {len(s2p)}")
     print(f"[DEBUG] Available phenotypes: {len(phenos)}")
+    print(f"[DEBUG] Looking for species: '{species}'")
+    print(f"[DEBUG] Available species in phenos: {list(phenos.keys())[:10]}...")
+    
     if species in phenos:
         print(f"[DEBUG] Phenotypes for {species}: {len(phenos[species])}")
         for i, (var, typ, path) in enumerate(phenos[species]):
             print(f"  {i+1}. {var} ({typ}) -> {path}")
     else:
         print(f"[DEBUG] WARNING: No phenotypes found for species {species}")
+        # Check for similar species names
+        similar = [s for s in phenos.keys() if species in s or s in species]
+        if similar:
+            print(f"[DEBUG] Similar species names found: {similar[:5]}")
+        else:
+            print(f"[DEBUG] No similar species names found")
     """
     Worker function for parallel processing of species-specific analyses.
     
@@ -387,9 +405,6 @@ def main() -> None:
     ap.add_argument('--missing-values', nargs='*', default=None,
                     help='Additional missing value indicators to treat as NaN (space-separated)')
     args = ap.parse_args()
-
-    # Check for common dependency issues
-    check_perl_dependencies()
     
     # derive per-worker threads
     args.threads_per_worker = max(1, args.threads // max(1, args.workers))
