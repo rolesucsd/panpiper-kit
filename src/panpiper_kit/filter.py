@@ -1,10 +1,16 @@
 import os
 import re
 import pathlib
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
 
 import pandas as pd
 import numpy as np
+
+# Constants for phenotype filtering
+DEFAULT_MIN_N = 6
+DEFAULT_MAX_MISSING_FRAC = 0.2
+DEFAULT_MIN_LEVEL_N = 3
+DEFAULT_MIN_UNIQUE_CONT = 6
 
 
 def _pick_col(cols_lower_map: Dict[str, str], candidates: List[str]) -> str:
@@ -60,7 +66,7 @@ def _extract_patient_from_bin(bin_name: str) -> str:
         return bin_name
 
 
-def _clean_metadata_values(series: pd.Series, custom_missing_values: List[str] = None) -> pd.Series:
+def _clean_metadata_values(series: pd.Series, custom_missing_values: Optional[List[str]] = None) -> pd.Series:
     """
     Clean metadata values by converting common "missing" indicators to NaN.
     
@@ -158,15 +164,103 @@ def _classify(s: pd.Series, min_unique_cont: int) -> str:
         return 'continuous'
     return 'categorical'
 
+
+def _is_valid_phenotype(s: pd.Series, typ: str, max_missing_frac: float, min_n: int, 
+                       min_level_n: int, min_unique_cont: int) -> bool:
+    """
+    Check if a phenotype series meets the filtering criteria.
+    
+    Args:
+        s: Phenotype series to validate
+        typ: Phenotype type ('binary', 'categorical', 'continuous')
+        max_missing_frac: Maximum fraction of missing values allowed
+        min_n: Minimum number of samples required
+        min_level_n: Minimum samples per category level
+        min_unique_cont: Minimum unique values for continuous phenotypes
+        
+    Returns:
+        True if phenotype meets criteria, False otherwise
+    """
+    # Check missing value fraction
+    if s.isna().mean() > max_missing_frac:
+        return False
+    
+    # Check minimum sample count
+    s_clean = s.dropna()
+    if len(s_clean) < min_n:
+        return False
+    
+    # Type-specific validation
+    if typ == 'binary':
+        vc = s_clean.astype(str).value_counts()
+        return not (vc < min_level_n).any()
+    elif typ == 'categorical':
+        vc = s_clean.astype(str).value_counts()
+        keep_levels = vc[vc >= min_level_n].index
+        s_filtered = s_clean[s_clean.astype(str).isin(keep_levels)]
+        return s_filtered.nunique() >= 2 and len(s_filtered) >= min_n
+    else:  # continuous
+        if s_clean.nunique() < min_unique_cont:
+            return False
+        try:
+            std_val = s_clean.std(ddof=0, skipna=True)
+            return not (pd.isna(std_val) or float(std_val) == 0.0)
+        except (ValueError, TypeError):
+            return False
+
+
+def _process_species_phenotypes(sub: pd.DataFrame, species: str, sample_col: str, 
+                               out_dir: str, max_missing_frac: float, min_n: int,
+                               min_level_n: int, min_unique_cont: int) -> List[Tuple[str, str, str]]:
+    """
+    Process phenotypes for a single species and create phenotype files.
+    
+    Args:
+        sub: DataFrame subset for this species
+        species: Species name
+        sample_col: Name of the sample column
+        out_dir: Output directory for phenotype files
+        max_missing_frac: Maximum fraction of missing values allowed
+        min_n: Minimum number of samples required
+        min_level_n: Minimum samples per category level
+        min_unique_cont: Minimum unique values for continuous phenotypes
+        
+    Returns:
+        List of (variable, type, filepath) tuples for valid phenotypes
+    """
+    rows = []
+    exclude_cols = {'species', 'bin_identifier', 'patient', sample_col}
+    usable_cols = [c for c in sub.columns if c not in exclude_cols]
+    
+    for col in usable_cols:
+        s = sub[['bin_identifier', col]].copy()
+        typ = _classify(s[col], min_unique_cont)
+        
+        if not _is_valid_phenotype(s[col], typ, max_missing_frac, min_n, min_level_n, min_unique_cont):
+            continue
+            
+        # Handle categorical filtering
+        if typ == 'categorical':
+            vc = s[col].astype(str).value_counts()
+            keep_levels = vc[vc >= min_level_n].index
+            s = s[s[col].astype(str).isin(keep_levels)]
+        
+        # Create phenotype file
+        p = pathlib.Path(out_dir) / f"{species}__{re.sub(r'[^A-Za-z0-9_.-]+','_',col)}.pheno.tsv"
+        s.rename(columns={'bin_identifier': 'sample', col: 'phenotype'}).to_csv(p, sep='\t', index=False)
+        rows.append((col, typ, str(p)))
+    
+    return rows
+
 def filter_metadata_per_species(
         metadata_fp: str, 
         ani_map_fp: str, 
         out_dir: str,
-        min_n: int = 6, 
-        max_missing_frac: float = 0.2,
-        min_level_n: int = 3, 
-        min_unique_cont: int = 6,
-        custom_missing_values: List[str] = None
+        min_n: int = DEFAULT_MIN_N, 
+        max_missing_frac: float = DEFAULT_MAX_MISSING_FRAC,
+        min_level_n: int = DEFAULT_MIN_LEVEL_N, 
+        min_unique_cont: int = DEFAULT_MIN_UNIQUE_CONT,
+        custom_missing_values: Optional[List[str]] = None
     ) -> Dict[str, List[Tuple[str, str, str]]]:
     """
     Filter metadata per species and create phenotype files for analysis.
@@ -220,44 +314,18 @@ def filter_metadata_per_species(
     # Extract patient names from bin identifiers and merge
     ani['patient'] = ani['bin_identifier'].apply(_extract_patient_from_bin)
     df = ani.merge(meta, left_on='patient', right_on=sample_col, how='inner')
+    
     out_index = {}
     for species, sub in df.groupby('species', sort=False):
-        rows = []
-        # Exclude system columns from phenotype analysis
-        exclude_cols = {'species', 'bin_identifier', 'patient', sample_col}
-        usable = [c for c in sub.columns if c not in exclude_cols]
-        
-        for col in usable:
-            # Use bin_identifier as the sample identifier for phenotype files
-            s = sub[['bin_identifier', col]].copy()
-            miss_frac = s[col].isna().mean()
-            if miss_frac > max_missing_frac: continue
-            s = s.dropna(subset=[col])
-            if len(s) < min_n: continue
-            typ = _classify(s[col], min_unique_cont)
-            if typ == 'binary':
-                vc = s[col].astype(str).value_counts()
-                if (vc < min_level_n).any(): continue
-            elif typ == 'categorical':
-                vc = s[col].astype(str).value_counts()
-                keep_levels = vc[vc >= min_level_n].index
-                s = s[s[col].astype(str).isin(keep_levels)]
-                if s[col].nunique() < 2 or len(s) < min_n: continue
-            else:
-                if s[col].dropna().nunique() < min_unique_cont: continue
-                # Check for zero variance, handling NaN values properly
-                try:
-                    # Use skipna=True to avoid RuntimeWarning from NaN values in std calculation
-                    std_val = s[col].std(ddof=0, skipna=True)
-                    if pd.isna(std_val) or float(std_val) == 0.0: continue
-                except (ValueError, TypeError):
-                    continue
-            p = pathlib.Path(out_dir)/f"{species}__{re.sub(r'[^A-Za-z0-9_.-]+','_',col)}.pheno.tsv"
-            s.rename(columns={'bin_identifier': 'sample', col: 'phenotype'}).to_csv(p, sep='\t', index=False)
-            rows.append((col, typ, str(p)))
+        rows = _process_species_phenotypes(sub, species, sample_col, out_dir, 
+                                         max_missing_frac, min_n, min_level_n, min_unique_cont)
         out_index[species] = rows
-        idxp = pathlib.Path(out_dir)/f"{species}.list.tsv"
-        with open(idxp,'w') as fh:
+        
+        # Create manifest file
+        idxp = pathlib.Path(out_dir) / f"{species}.list.tsv"
+        with open(idxp, 'w') as fh:
             fh.write('species\tvariable\ttype\tpheno_tsv\n')
-            for (v,t,pth) in rows: fh.write(f"{species}\t{v}\t{t}\t{pth}\n")
+            for (v, t, pth) in rows:
+                fh.write(f"{species}\t{v}\t{t}\t{pth}\n")
+    
     return out_index

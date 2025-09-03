@@ -5,7 +5,7 @@ import pandas as pd
 import os
 import math
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from typing import Dict, List, Tuple, Any
+from typing import Dict, List, Tuple, Any, Optional, Union
 
 from .files import list_fastas, ensure_dir, run
 from .filter import filter_metadata_per_species, filter_by_checkm
@@ -17,6 +17,98 @@ from .fdr import add_bh
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+# Constants
+DEFAULT_MIN_SAMPLES = 30
+DEFAULT_MAX_MISSING_FRAC = 0.2
+DEFAULT_MIN_LEVEL_N = 3
+DEFAULT_MIN_UNIQUE_CONT = 3
+
+# ----- helper functions -----
+
+def _build_species_sample_map(ani: pd.DataFrame, s2p: Dict[str, str], min_n: int) -> Dict[str, List[str]]:
+    """
+    Build mapping from species to sample lists, filtering by minimum sample count.
+    
+    Args:
+        ani: ANI mapping DataFrame with 'species' and 'sample' columns
+        s2p: Dictionary mapping sample names to file paths
+        min_n: Minimum number of samples required per species
+        
+    Returns:
+        Dictionary mapping species names to lists of sample names
+    """
+    return {sp: [s for s in ani.loc[ani['species']==sp, 'sample'] if s in s2p] 
+            for sp in ani['species'].unique() 
+            if len([s for s in ani.loc[ani['species']==sp, 'sample'] if s in s2p]) >= min_n}
+
+
+def _get_remaining_species(sp_to_samples: Dict[str, List[str]], args: argparse.Namespace, 
+                          phenos: Dict[str, List[Tuple[str, str, str]]],
+                          mash_dir: pathlib.Path, assoc_dir: pathlib.Path, 
+                          unitig_dir: pathlib.Path, progress_file: pathlib.Path) -> Dict[str, List[str]]:
+    """
+    Determine which species need to be processed based on resume logic.
+    
+    Args:
+        sp_to_samples: Dictionary mapping species to sample lists
+        args: Command line arguments
+        phenos: Dictionary of phenotype information per species
+        mash_dir: Directory for Mash output files
+        assoc_dir: Directory for association test results
+        unitig_dir: Directory for unitig files
+        progress_file: Path to progress log file
+        
+    Returns:
+        Dictionary of species that need to be processed
+    """
+    if args.resume and not args.force:
+        completed_species = load_completed_species(progress_file)
+        logger.info(f"Found {len(completed_species)} previously completed species in progress log")
+        
+        # Check which species are actually complete (file-based verification)
+        actually_complete = set()
+        for sp in completed_species:
+            if is_species_complete(sp, phenos, mash_dir, assoc_dir, unitig_dir):
+                actually_complete.add(sp)
+            else:
+                logger.info(f"Species {sp} marked as complete but files missing, will re-run")
+        
+        # Filter out completed species
+        remaining = {sp: sams for sp, sams in sp_to_samples.items() 
+                    if sp not in actually_complete}
+        logger.info(f"Will process {len(remaining)} remaining species")
+        return remaining
+    else:
+        if args.force:
+            logger.info(f"Force mode: will re-run all {len(sp_to_samples)} species")
+        return sp_to_samples
+
+
+def _collect_existing_results(actually_complete: set, phenos: Dict[str, List[Tuple[str, str, str]]], 
+                             assoc_dir: pathlib.Path) -> List[pd.DataFrame]:
+    """
+    Collect existing results from previously completed species.
+    
+    Args:
+        actually_complete: Set of species that are actually complete
+        phenos: Dictionary of phenotype information per species
+        assoc_dir: Directory for association test results
+        
+    Returns:
+        List of DataFrames containing existing results
+    """
+    results = []
+    for sp in actually_complete:
+        for var, typ, _ in phenos.get(sp, []):
+            dist_file = assoc_dir / f'{sp}__{var}.dist_assoc.tsv'
+            if dist_file.exists():
+                try:
+                    df = pd.read_csv(dist_file, sep='\t')
+                    results.append(df)
+                except Exception as e:
+                    logger.warning(f"Could not load existing results for {sp}__{var}: {e}")
+    return results
 
 # ----- progress tracking -----
 
@@ -177,7 +269,7 @@ def _worker(
     species: str, 
     sams: List[str], 
     s2p: Dict[str, str], 
-    args: Any, 
+    args: argparse.Namespace, 
     phenos: Dict[str, List[Tuple[str, str, str]]], 
     mash_dir: pathlib.Path, 
     assoc_dir: pathlib.Path, 
@@ -248,6 +340,7 @@ def _worker(
             if args.tests == 'exact':
                 df = distance_assoc_one(str(mash_tsv), pheno_tsv, typ, args.perms)
             else:
+                logger.info(f"Running fast distance tests for {species}__{var} ({typ})")
                 df = fast_distance_tests(str(mash_tsv), pheno_tsv, typ, max_axes=args.max_axes)
             
             df['species'] = species
@@ -307,11 +400,22 @@ def main() -> None:
     Performs ANI-split Mash lineage tests and per-species unitig GWAS with optional CheckM filtering
     and parallel processing across species.
     
+    This pipeline processes genomic data through the following steps:
+    1. Load and filter samples based on CheckM quality metrics (optional)
+    2. Generate phenotype files per species from metadata
+    3. Compute Mash distances within each species
+    4. Generate unitigs for GWAS analysis
+    5. Run distance-based association tests (PERMANOVA/Mantel or fast PCoA-based)
+    6. Run pyseer GWAS for binary/continuous phenotypes
+    7. Apply FDR correction to results
+    
     Features:
     - Resume capability: Skip previously completed species on restart
     - Progress tracking: Log species processing status to progress.log
     - Force re-run: Option to ignore existing files and re-run all species
     - File verification: Check actual file existence, not just progress log
+    - Parallel processing: Process multiple species simultaneously
+    - Flexible phenotype types: Binary, categorical, and continuous phenotypes
     """
     ap = argparse.ArgumentParser(
         description='ANI-split Mash lineage tests + per-species unitig GWAS (parallel)'
@@ -332,10 +436,10 @@ def main() -> None:
     ap.add_argument('--mash-s', type=int, default=10000, help='Mash sketch size')
     ap.add_argument('--kmer', type=int, default=31, help='unitig-caller k-mer size')
     ap.add_argument('--maf', type=float, default=0.05, help='pyseer min allele freq for unitigs')
-    ap.add_argument('--min-n', type=int, default=30, help='minimum usable samples per species')
-    ap.add_argument('--max-missing-frac', type=float, default=0.2, help='max fraction of missing values allowed for a phenotype')
-    ap.add_argument('--min-level-n', type=int, default=3, help='min samples required per category level')
-    ap.add_argument('--min-unique-cont', type=int, default=3, help='min unique values required for continuous phenotypes')
+    ap.add_argument('--min-n', type=int, default=DEFAULT_MIN_SAMPLES, help='minimum usable samples per species')
+    ap.add_argument('--max-missing-frac', type=float, default=DEFAULT_MAX_MISSING_FRAC, help='max fraction of missing values allowed for a phenotype')
+    ap.add_argument('--min-level-n', type=int, default=DEFAULT_MIN_LEVEL_N, help='min samples required per category level')
+    ap.add_argument('--min-unique-cont', type=int, default=DEFAULT_MIN_UNIQUE_CONT, help='min unique values required for continuous phenotypes')
     ap.add_argument('--resume', action='store_true', default=True, 
                     help='Resume from previous run (skip completed species)')
     ap.add_argument('--force', action='store_true', default=False,
@@ -438,31 +542,9 @@ def main() -> None:
             custom_missing_values=args.missing_values
         )
 
-    # build species -> sample list and run in parallel
-    sp_to_samples = {sp: [s for s in ani.loc[ani['species']==sp, 'sample'] if s in s2p] for sp in species_list}
-
-    # Handle resume logic
-    if args.resume and not args.force:
-        completed_species = load_completed_species(progress_file)
-        logger.info(f"Found {len(completed_species)} previously completed species in progress log")
-        
-        # Check which species are actually complete (file-based verification)
-        actually_complete = set()
-        for sp in completed_species:
-            if is_species_complete(sp, phenos, mash_dir, assoc_dir, unitig_dir):
-                actually_complete.add(sp)
-            else:
-                logger.info(f"Species {sp} marked as complete but files missing, will re-run")
-        
-        # Filter out completed species
-        remaining_species = {sp: sams for sp, sams in sp_to_samples.items() 
-                           if sp not in actually_complete and len(sams) >= args.min_n}
-        logger.info(f"Will process {len(remaining_species)} remaining species")
-    else:
-        remaining_species = {sp: sams for sp, sams in sp_to_samples.items() 
-                           if len(sams) >= args.min_n}
-        if args.force:
-            logger.info(f"Force mode: will re-run all {len(remaining_species)} species")
+    # Build species -> sample list and determine which species to process
+    sp_to_samples = _build_species_sample_map(ani, s2p, args.min_n)
+    remaining_species = _get_remaining_species(sp_to_samples, args, phenos, mash_dir, assoc_dir, unitig_dir, progress_file)
 
     results = []
     with ProcessPoolExecutor(max_workers=args.workers) as ex:
@@ -479,18 +561,8 @@ def main() -> None:
         completed_species = load_completed_species(progress_file)
         actually_complete = {sp for sp in completed_species 
                            if is_species_complete(sp, phenos, mash_dir, assoc_dir, unitig_dir)}
-        
-        # Load existing results from completed species
-        for sp in actually_complete:
-            # Find existing association files for this species
-            for var, typ, _ in phenos.get(sp, []):
-                dist_file = assoc_dir / f'{sp}__{var}.dist_assoc.tsv'
-                if dist_file.exists():
-                    try:
-                        df = pd.read_csv(dist_file, sep='\t')
-                        results.append(df)
-                    except Exception as e:
-                        logger.warning(f"Could not load existing results for {sp}__{var}: {e}")
+        existing_results = _collect_existing_results(actually_complete, phenos, assoc_dir)
+        results.extend(existing_results)
 
     if results:
         master = OUT/'assoc'/'mash_lineage_assoc_by_species.tsv'

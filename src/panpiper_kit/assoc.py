@@ -1,4 +1,4 @@
-from typing import Tuple
+from typing import Tuple, Union
 import logging
 
 import pandas as pd
@@ -7,6 +7,11 @@ from skbio.stats.distance import DistanceMatrix, permanova, mantel
 from scipy.stats import f_oneway, chi2, f as f_dist
 
 logger = logging.getLogger(__name__)
+
+# Constants for statistical tests
+DEFAULT_MAX_AXES = 10
+DEFAULT_PERMS = 999
+EIGENVALUE_TOLERANCE = 1e-12
 
 # ---------------------------
 # Exact tests (Permutation)
@@ -82,7 +87,7 @@ def distance_assoc_one(mash_tsv: str, pheno_tsv: str, typ: str, perms: int) -> p
 # FAST tests (No permutations)
 # ---------------------------
 
-def fast_distance_tests(mash_tsv: str, pheno_tsv: str, typ: str, max_axes: int = 10) -> pd.DataFrame:
+def fast_distance_tests(mash_tsv: str, pheno_tsv: str, typ: str, max_axes: int = DEFAULT_MAX_AXES) -> pd.DataFrame:
     """
     Perform fast distance-based association tests without permutations.
     
@@ -197,7 +202,7 @@ def _cont_distance(vec: pd.Series) -> np.ndarray:
     z = (vec_clean - vec_clean.mean()) / vec_clean.std(ddof=0)
     return np.sqrt((z.values[:,None] - z.values[None,:])**2)
 
-def _pcoa_scores(D: np.ndarray, max_axes: int = 10) -> Tuple[np.ndarray, np.ndarray]:
+def _pcoa_scores(D: np.ndarray, max_axes: int = DEFAULT_MAX_AXES) -> Tuple[np.ndarray, np.ndarray]:
     """
     Perform classical MDS/PCoA on a distance matrix.
     
@@ -209,28 +214,50 @@ def _pcoa_scores(D: np.ndarray, max_axes: int = 10) -> Tuple[np.ndarray, np.ndar
         Tuple of (scores, eigenvalues) keeping only positive-eigenvalue axes (up to max_axes)
     """
     n = D.shape[0]
-    # Gower centering
+    
+    # Gower centering: B = -0.5 * J * D^2 * J
     J = np.eye(n) - np.ones((n, n)) / n
     B = -0.5 * (J @ (D**2) @ J)
-    # symmetric -> eigendecomposition
-    eigvals, eigvecs = np.linalg.eigh(B)       # ascending order
-    # keep positive eigenvalues (numerical tolerance)
-    tol = 1e-12
-    pos = eigvals > tol
-    if not np.any(pos):
-        # pathological: return first axis anyway to avoid crashes
-        idx = np.argsort(eigvals)[::-1][:1]
-        L = np.abs(eigvals[idx])
-        V = eigvecs[:, idx]
-        scores = V * np.sqrt(L)
-        return scores[:, :min(max_axes, scores.shape[1])], L
-    eigvals = eigvals[pos]
-    eigvecs = eigvecs[:, pos]
-    # sort descending
-    order = np.argsort(eigvals)[::-1]
+    
+    # Eigendecomposition
+    eigvals, eigvecs = np.linalg.eigh(B)  # ascending order
+    
+    # Filter positive eigenvalues (numerical tolerance)
+    pos_mask = eigvals > EIGENVALUE_TOLERANCE
+    
+    if not np.any(pos_mask):
+        # Pathological case: return first axis to avoid crashes
+        return _handle_pathological_case(eigvals, eigvecs, max_axes)
+    
+    # Keep only positive eigenvalues and sort descending
+    eigvals = eigvals[pos_mask]
+    eigvecs = eigvecs[:, pos_mask]
+    order = np.argsort(eigvals)[::-1]  # descending order
     eigvals = eigvals[order]
     eigvecs = eigvecs[:, order]
-    # scores = V * sqrt(lambda)
+    
+    # Compute scores: V * sqrt(lambda)
     scores = eigvecs * np.sqrt(eigvals)
+    
+    # Return up to max_axes
     k = max(1, min(max_axes, scores.shape[1]))
     return scores[:, :k], eigvals[:k]
+
+
+def _handle_pathological_case(eigvals: np.ndarray, eigvecs: np.ndarray, max_axes: int) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Handle pathological case where no positive eigenvalues exist.
+    
+    Args:
+        eigvals: All eigenvalues
+        eigvecs: All eigenvectors
+        max_axes: Maximum number of axes to return
+        
+    Returns:
+        Tuple of (scores, eigenvalues) using the largest magnitude eigenvalue
+    """
+    idx = np.argsort(eigvals)[::-1][:1]  # largest magnitude
+    L = np.abs(eigvals[idx])
+    V = eigvecs[:, idx]
+    scores = V * np.sqrt(L)
+    return scores[:, :min(max_axes, scores.shape[1])], L
