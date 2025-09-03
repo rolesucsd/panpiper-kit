@@ -45,18 +45,25 @@ def distance_assoc_one(mash_tsv: str, pheno_tsv: str, typ: str, perms: int) -> p
 
     ph = pd.read_csv(pheno_tsv, sep='\t').dropna(subset=['phenotype'])
     
-    # Align samples
-    keep = [s for s in Dm.index if s in set(ph['sample'])]
-    species = pheno_tsv.split('/')[-1].split('__')[0]
-    variable = '__'.join(pheno_tsv.split('/')[-1].split('__')[1:]).replace('.pheno.tsv','')
-
-    if len(keep) < 4:
-        logger.warning(f"Too few samples ({len(keep)}) for exact distance test, returning NA result")
+    # Inner join: only keep samples that have both Mash distances AND phenotype values
+    common_samples = set(Dm.index) & set(ph['sample'])
+    logger.info(f"Found {len(common_samples)} samples with both Mash distances and phenotype values")
+    
+    if len(common_samples) < 4:
+        logger.warning(f"Too few samples ({len(common_samples)}) for exact distance test, returning NA result")
+        species = pheno_tsv.split('/')[-1].split('__')[0]
+        variable = '__'.join(pheno_tsv.split('/')[-1].split('__')[1:]).replace('.pheno.tsv','')
         return pd.DataFrame([{
-            'species': species, 'metadata': variable, 'n_samples': len(keep),
+            'species': species, 'metadata': variable, 'n_samples': len(common_samples),
             'test': 'NA', 'stat': np.nan, 'R2': np.nan, 'pvalue': np.nan,
             'permutations': perms
         }])
+    
+    # Filter to common samples only
+    keep = list(common_samples)
+    species = pheno_tsv.split('/')[-1].split('__')[0]
+    variable = '__'.join(pheno_tsv.split('/')[-1].split('__')[1:]).replace('.pheno.tsv','')
+    logger.info(f"Processing {len(keep)} samples for exact distance test")
 
     Dm = Dm.loc[keep, keep]
     DM = DistanceMatrix(Dm.values, keep)
@@ -127,18 +134,24 @@ def fast_distance_tests(mash_tsv: str, pheno_tsv: str, typ: str, max_axes: int =
         logger.warning(f"Too few samples ({n}) for fast distance test, returning NA result")
         return pd.DataFrame([{'n_samples': n, 'test': 'FAST', 'stat': np.nan, 'pvalue': np.nan}])
 
-    # Align phenotype
+    # Align phenotype - inner join: only keep samples with both Mash distances AND phenotype values
     ph = pd.read_csv(pheno_tsv, sep='\t').dropna(subset=['phenotype'])
-    ph = ph[ph['sample'].isin(labels)].set_index('sample').loc[labels]
-    keep_mask = ph['phenotype'].notna().values
-    if keep_mask.sum() < 4:
-        logger.warning(f"Too few samples with valid phenotypes ({keep_mask.sum()}) for fast distance test, returning NA result")
-        return pd.DataFrame([{'n_samples': int(keep_mask.sum()), 'test': 'FAST', 'stat': np.nan, 'pvalue': np.nan}])
+    common_samples = set(labels) & set(ph['sample'])
+    logger.info(f"Found {len(common_samples)} samples with both Mash distances and phenotype values")
+    
+    if len(common_samples) < 4:
+        logger.warning(f"Too few samples ({len(common_samples)}) for fast distance test, returning NA result")
+        return pd.DataFrame([{'n_samples': len(common_samples), 'test': 'FAST', 'stat': np.nan, 'pvalue': np.nan}])
+    
+    # Filter to common samples and create mask
+    ph_filtered = ph[ph['sample'].isin(common_samples)].set_index('sample').loc[list(common_samples)]
+    keep_mask = ph_filtered['phenotype'].notna().values
+    logger.info(f"Processing {keep_mask.sum()} samples for fast distance test")
 
     # Subset to non-missing samples consistently
     D = Dm.values[np.ix_(keep_mask, keep_mask)]
-    y = ph['phenotype'].values[keep_mask]
-    labs = np.array(labels)[keep_mask]
+    y = ph_filtered['phenotype'].values[keep_mask]
+    labs = np.array(list(common_samples))[keep_mask]
     n_eff = len(labs)
 
     # PCoA: double-center and eigendecompose
