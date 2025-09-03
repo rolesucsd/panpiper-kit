@@ -59,6 +59,45 @@ def _extract_patient_from_bin(bin_name: str) -> str:
         # Fallback: if only one part, return the whole thing
         return bin_name
 
+
+def _clean_metadata_values(series: pd.Series, custom_missing_values: List[str] = None) -> pd.Series:
+    """
+    Clean metadata values by converting common "missing" indicators to NaN.
+    
+    Converts values like "Not collected", "Not available", "Unknown", etc. to NaN
+    so they are properly treated as missing values rather than valid categories.
+    
+    Args:
+        series: Input pandas Series to clean
+        custom_missing_values: Additional missing value indicators to treat as NaN
+        
+    Returns:
+        Series with cleaned values (missing indicators converted to NaN)
+    """
+    # Common missing value indicators (case-insensitive)
+    missing_indicators = {
+        'not collected', 'not available', 'unknown', 'n/a', 'na', 'none', 
+        'missing', 'not specified', 'not provided', 'not reported',
+        'not applicable', 'not determined', 'not tested', 'not done',
+        'pending', 'tbd', 'to be determined', 'not recorded',
+        'not documented', 'not assessed', 'not evaluated'
+    }
+    
+    # Add custom missing values if provided
+    if custom_missing_values:
+        missing_indicators.update({v.lower().strip() for v in custom_missing_values})
+    
+    # Convert to lowercase for comparison
+    series_str = series.astype(str).str.lower().str.strip()
+    
+    # Replace missing indicators with NaN
+    mask = series_str.isin(missing_indicators)
+    cleaned_series = series.copy()
+    cleaned_series.loc[mask] = pd.NA
+    
+    return cleaned_series
+
+
 def filter_by_checkm(s2p: Dict[str, str], checkm_fp: str, comp_min: float, cont_max: float) -> Dict[str, str]:
     """
     Filter samples based on CheckM quality metrics.
@@ -123,7 +162,8 @@ def filter_metadata_per_species(
         min_n: int = 6, 
         max_missing_frac: float = 0.2,
         min_level_n: int = 3, 
-        min_unique_cont: int = 6
+        min_unique_cont: int = 6,
+        custom_missing_values: List[str] = None
     ) -> Dict[str, List[Tuple[str, str, str]]]:
     """
     Filter metadata per species and create phenotype files for analysis.
@@ -144,6 +184,7 @@ def filter_metadata_per_species(
         max_missing_frac: Maximum fraction of missing values allowed per phenotype
         min_level_n: Minimum number of samples required per category level
         min_unique_cont: Minimum number of unique values for continuous phenotypes
+        custom_missing_values: Additional missing value indicators to treat as NaN
         
     Returns:
         Dictionary mapping species names to lists of (variable, type, filepath) tuples
@@ -164,6 +205,12 @@ def filter_metadata_per_species(
         raise RuntimeError("metadata must contain 'SampleID' or similar column")
     
     meta = meta.drop_duplicates(subset=[sample_col])
+    
+    # Clean metadata values - convert "missing" indicators to NaN
+    print(f"[info] Cleaning metadata values (converting missing indicators to NaN)")
+    for col in meta.columns:
+        if col != sample_col:  # Don't clean the sample ID column
+            meta[col] = _clean_metadata_values(meta[col], custom_missing_values)
     
     # Load ANI mapping (species -> bin_identifier)
     ani = pd.read_csv(ani_map_fp, sep='\t', names=['species','bin_identifier'])

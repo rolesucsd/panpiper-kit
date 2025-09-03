@@ -285,6 +285,8 @@ def main() -> None:
                     help='Resume from previous run (skip completed species)')
     ap.add_argument('--force', action='store_true', default=False,
                     help='Force re-run all species (ignore existing files)')
+    ap.add_argument('--missing-values', nargs='*', default=None,
+                    help='Additional missing value indicators to treat as NaN (space-separated)')
     args = ap.parse_args()
 
     # Check for common dependency issues
@@ -365,7 +367,8 @@ def main() -> None:
             filter_metadata_per_species(
                 metadata_fp=args.metadata, ani_map_fp=str(temp_ani_map), out_dir=str(phenos_dir),
                 min_n=args.min_n, max_missing_frac=args.max_missing_frac,
-                min_level_n=args.min_level_n, min_unique_cont=args.min_unique_cont
+                min_level_n=args.min_level_n, min_unique_cont=args.min_unique_cont,
+                custom_missing_values=args.missing_values
             )
         
         # Load all phenotype information (existing + newly generated)
@@ -379,7 +382,8 @@ def main() -> None:
         phenos = filter_metadata_per_species(
             metadata_fp=args.metadata, ani_map_fp=args.ani_map, out_dir=str(phenos_dir),
             min_n=args.min_n, max_missing_frac=args.max_missing_frac,
-            min_level_n=args.min_level_n, min_unique_cont=args.min_unique_cont
+            min_level_n=args.min_level_n, min_unique_cont=args.min_unique_cont,
+            custom_missing_values=args.missing_values
         )
 
     # build species -> sample list and run in parallel
