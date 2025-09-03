@@ -55,14 +55,20 @@ def distance_assoc_one(mash_tsv: str, pheno_tsv: str, typ: str, perms: int) -> p
                    R2=np.nan, pvalue=float(res['p-value']), permutations=perms)
     else:
         v = ph.set_index('sample').loc[keep, 'phenotype']
-        if v.dropna().nunique() < 2 or float(v.std(ddof=0)) == 0.0:
+        # Check for zero variance, handling NaN values properly
+        try:
+            std_val = v.std(ddof=0)
+            if v.dropna().nunique() < 2 or pd.isna(std_val) or float(std_val) == 0.0:
+                row = dict(species=species, metadata=variable, n_samples=len(keep),
+                           test='Mantel_spearman', stat=np.nan, R2=np.nan, pvalue=np.nan, permutations=perms)
+            else:
+                DX = DistanceMatrix(_cont_distance(v), keep)
+                r, p, n = mantel(DM, DX, method='spearman', permutations=perms, alternative='two-sided')
+                row = dict(species=species, metadata=variable, n_samples=len(keep),
+                           test='Mantel_spearman', stat=float(r), R2=np.nan, pvalue=float(p), permutations=perms)
+        except (ValueError, TypeError):
             row = dict(species=species, metadata=variable, n_samples=len(keep),
                        test='Mantel_spearman', stat=np.nan, R2=np.nan, pvalue=np.nan, permutations=perms)
-        else:
-            DX = DistanceMatrix(_cont_distance(v), keep)
-            r, p, n = mantel(DM, DX, method='spearman', permutations=perms, alternative='two-sided')
-            row = dict(species=species, metadata=variable, n_samples=len(keep),
-                       test='Mantel_spearman', stat=float(r), R2=np.nan, pvalue=float(p), permutations=perms)
     return pd.DataFrame([row])
 
 # ---------------------------
@@ -170,7 +176,14 @@ def _cont_distance(vec: pd.Series) -> np.ndarray:
     Returns:
         Distance matrix as numpy array
     """
-    z = (vec - vec.mean())/vec.std(ddof=0)
+    # Handle NaN values and zero variance
+    vec_clean = vec.dropna()
+    if len(vec_clean) == 0 or vec_clean.std(ddof=0) == 0.0:
+        # Return zero distance matrix if no valid data or zero variance
+        n = len(vec)
+        return np.zeros((n, n))
+    
+    z = (vec_clean - vec_clean.mean()) / vec_clean.std(ddof=0)
     return np.sqrt((z.values[:,None] - z.values[None,:])**2)
 
 def _pcoa_scores(D: np.ndarray, max_axes: int = 10) -> Tuple[np.ndarray, np.ndarray]:

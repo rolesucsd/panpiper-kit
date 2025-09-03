@@ -12,6 +12,7 @@ from .mash import mash_within_species
 from .assoc import distance_assoc_one, fast_distance_tests
 from .gwas import ensure_unitigs
 from .fdr import add_bh
+from .external import check_perl_dependencies
 
 # ----- worker -----
 
@@ -115,6 +116,9 @@ def main() -> None:
     ap.add_argument('--min-unique-cont', type=int, default=3, help='min unique values required for continuous phenotypes')
     args = ap.parse_args()
 
+    # Check for common dependency issues
+    check_perl_dependencies()
+    
     # derive per-worker threads
     args.threads_per_worker = max(1, args.threads // max(1, args.workers))
     os.environ['OMP_NUM_THREADS'] = str(args.threads_per_worker)

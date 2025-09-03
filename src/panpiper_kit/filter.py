@@ -196,7 +196,12 @@ def filter_metadata_per_species(
                 if s[col].nunique() < 2 or len(s) < min_n: continue
             else:
                 if s[col].dropna().nunique() < min_unique_cont: continue
-                if float(s[col].std(ddof=0)) == 0.0: continue
+                # Check for zero variance, handling NaN values properly
+                try:
+                    std_val = s[col].std(ddof=0)
+                    if pd.isna(std_val) or float(std_val) == 0.0: continue
+                except (ValueError, TypeError):
+                    continue
             p = pathlib.Path(out_dir)/f"{species}__{re.sub(r'[^A-Za-z0-9_.-]+','_',col)}.pheno.tsv"
             s.rename(columns={'bin_identifier': 'sample', col: 'phenotype'}).to_csv(p, sep='\t', index=False)
             rows.append((col, typ, str(p)))
