@@ -149,8 +149,9 @@ def load_phenotype_manifest(phenos_dir: pathlib.Path) -> Dict[str, List[Tuple[st
     print(f"[DEBUG] Found {len(list_files)} list.tsv files")
     
     for list_file in list_files:
-        species = list_file.stem  # Remove .list.tsv extension
-        print(f"[DEBUG] Processing manifest for species: {species}")
+        # Remove .list.tsv extension properly
+        species = list_file.name.replace('.list.tsv', '')
+        print(f"[DEBUG] Processing manifest for species: {species} from: {list_file}")
         
         try:
             df = pd.read_csv(list_file, sep='\t')
