@@ -93,6 +93,9 @@ def _clean_metadata_values(series: pd.Series, custom_missing_values: List[str] =
     # Replace missing indicators with NaN
     mask = series_str.isin(missing_indicators)
     cleaned_series = series.copy()
+    # Explicitly cast to object dtype to avoid dtype incompatibility warning
+    if cleaned_series.dtype == 'bool':
+        cleaned_series = cleaned_series.astype('object')
     cleaned_series.loc[mask] = pd.NA
     
     return cleaned_series
@@ -245,7 +248,8 @@ def filter_metadata_per_species(
                 if s[col].dropna().nunique() < min_unique_cont: continue
                 # Check for zero variance, handling NaN values properly
                 try:
-                    std_val = s[col].std(ddof=0)
+                    # Use skipna=True to avoid RuntimeWarning from NaN values in std calculation
+                    std_val = s[col].std(ddof=0, skipna=True)
                     if pd.isna(std_val) or float(std_val) == 0.0: continue
                 except (ValueError, TypeError):
                     continue
