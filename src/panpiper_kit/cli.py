@@ -3,9 +3,8 @@ import logging
 import pathlib
 import pandas as pd
 import os
-import math
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from typing import Dict, List, Tuple, Any, Optional, Union
+from typing import Dict, List, Tuple, Any
 
 from .files import list_fastas, ensure_dir, run
 from .filter import filter_metadata_per_species, filter_by_checkm
@@ -13,6 +12,7 @@ from .mash import mash_within_species
 from .assoc import distance_assoc_one, fast_distance_tests
 from .gwas import ensure_unitigs
 from .fdr import add_bh
+from .summarize_pyseer import summarize_pyseer
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -262,6 +262,8 @@ def load_phenotype_manifest(phenos_dir: pathlib.Path) -> Dict[str, List[Tuple[st
     
     logger.info(f"Total species with phenotypes: {len(phenos)}")
     return phenos
+
+
 
 # ----- worker -----
 
@@ -580,3 +582,12 @@ def main() -> None:
         logger.info(f"Final results written to {master}")
     else:
         logger.info("No results to write")
+    
+    # Always summarize pyseer results
+    logger.info("Summarizing pyseer results...")
+    summarize_pyseer(
+        indir=str(assoc_dir),
+        out=str(OUT/'assoc'/'pyseer_summary.tsv'),
+        alpha=0.05,
+        pattern="*.pyseer.tsv*"
+    )
