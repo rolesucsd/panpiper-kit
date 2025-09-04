@@ -379,7 +379,7 @@ def _worker(
                                '--phenotypes', pheno_tsv,
                                '--kmers', uc_pyseer, '--uncompressed',
                                '--min-af', str(args.maf), '--cpu', str(t), '--no-distances']
-                        subprocess.check_call(cmd, stdout=fh)
+                        subprocess.check_call(cmd, stdout=fh, stderr=subprocess.DEVNULL)
                     
                     # Check if output was created and has content
                     if os.path.exists(out_fp) and os.path.getsize(out_fp) > 0:
