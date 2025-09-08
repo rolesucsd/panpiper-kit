@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 # Constants
 DEFAULT_MIN_SAMPLES = 30
 DEFAULT_MAX_MISSING_FRAC = 0.2
-DEFAULT_MIN_LEVEL_N = 3
+DEFAULT_MIN_LEVEL_N = 5
 DEFAULT_MIN_UNIQUE_CONT = 3
 
 # ----- helper functions -----
@@ -441,7 +441,7 @@ def main() -> None:
     ap.add_argument('--threads', type=int, default=32, help='total CPU budget')
     ap.add_argument('--workers', type=int, default=4, help='number of species processed in parallel')
     ap.add_argument('--perms', type=int, default=999, help='number of permutations for PERMANOVA/Mantel')
-    ap.add_argument('--tests', choices=['exact','fast'], default='exact', help='exact=PERMANOVA/Mantel; fast=PC-based ANOVA/OLS (no permutations)')
+    ap.add_argument('--tests', choices=['exact','fast'], default='fast', help='exact=PERMANOVA/Mantel; fast=PC-based ANOVA/OLS (no permutations)')
     ap.add_argument('--max-axes', type=int, default=10, help='PC axes used in fast mode')
     ap.add_argument('--mash-k', type=int, default=18, help='Mash k-mer size')
     ap.add_argument('--mash-s', type=int, default=10000, help='Mash sketch size')
