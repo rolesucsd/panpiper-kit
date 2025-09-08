@@ -360,10 +360,13 @@ def _worker(
                     if not results_df.empty:
                         logger.info(f"Association testing completed for {species}: {len(results_df)} results")
                         
-                        # Save results for each phenotype
+                        # Save all results to a single file for this species
+                        out_file = assoc_dir/f'{species}.dist_assoc.tsv'
+                        results_df.to_csv(out_file, sep='\t', index=False)
+                        logger.info(f"All distance association results for {species} saved to: {out_file}")
+                        
+                        # Convert to individual DataFrames for compatibility with existing code
                         for _, row in results_df.iterrows():
-                            var = row['metadata']
-                            # Create individual result DataFrame for compatibility
                             result_df = pd.DataFrame([{
                                 'species': row['species'],
                                 'metadata': row['metadata'],
@@ -372,40 +375,47 @@ def _worker(
                                 'pvalue': row['pvalue'],
                                 'n_samples': row['n_samples']
                             }])
-                            
-                            # Add exact test results if available
-                            if 'exact_test' in row and pd.notna(row['exact_test']):
-                                result_df['exact_test'] = row['exact_test']
-                                result_df['exact_stat'] = row['exact_stat']
-                                result_df['exact_pvalue'] = row['exact_pvalue']
-                                result_df['exact_permutations'] = row.get('exact_permutations', np.nan)
-                            
-                            out_d = assoc_dir/f'{species}__{var}.dist_assoc.tsv'
-                            result_df.to_csv(out_d, sep='\t', index=False)
-                            logger.info(f"Distance association results saved to: {out_d}")
                             rows.append(result_df)
                     else:
                         logger.warning(f"No results from association testing for {species}")
                         
                 except Exception as e:
                     logger.error(f"Association testing failed for {species}: {e}")
-                    # Fallback to individual processing if the new pipeline fails
-                    logger.info("Falling back to individual phenotype processing")
+                    # Fallback: create a single file with failed results
+                    logger.info("Creating fallback results file for failed association testing")
+                    fallback_results = []
                     for var, typ, pheno_tsv in phenotypes:
                         if not os.path.exists(pheno_tsv):
                             continue
-                        # Create a minimal result for failed phenotypes
-                        result_df = pd.DataFrame([{
+                        fallback_results.append({
                             'species': species,
                             'metadata': var,
+                            'type': typ,
+                            'pheno_tsv': pheno_tsv,
                             'test': 'FAILED',
                             'stat': np.nan,
                             'pvalue': np.nan,
-                            'n_samples': 0
-                        }])
-                        out_d = assoc_dir/f'{species}__{var}.dist_assoc.tsv'
-                        result_df.to_csv(out_d, sep='\t', index=False)
-                        rows.append(result_df)
+                            'n_samples': 0,
+                            'error': str(e)
+                        })
+                    
+                    if fallback_results:
+                        fallback_df = pd.DataFrame(fallback_results)
+                        out_file = assoc_dir/f'{species}.dist_assoc.tsv'
+                        fallback_df.to_csv(out_file, sep='\t', index=False)
+                        logger.info(f"Fallback results for {species} saved to: {out_file}")
+                        
+                        # Convert to individual DataFrames for compatibility
+                        for _, row in fallback_df.iterrows():
+                            result_df = pd.DataFrame([{
+                                'species': row['species'],
+                                'metadata': row['metadata'],
+                                'test': row['test'],
+                                'stat': row['stat'],
+                                'pvalue': row['pvalue'],
+                                'n_samples': row['n_samples']
+                            }])
+                            rows.append(result_df)
 
             # GWAS for binary/continuous phenotypes
             for var, typ, pheno_tsv in phenotypes:
