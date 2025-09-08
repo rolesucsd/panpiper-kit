@@ -337,7 +337,7 @@ def _worker(
                 # Check if phenotype file exists
                 if not os.path.exists(pheno_tsv):
                     logger.error(f"Phenotype file does not exist: {pheno_tsv}")
-                    continue
+                    raise FileNotFoundError(f"Phenotype file does not exist: {pheno_tsv}")
                 phenotype_jobs.append(PhenotypeJob(species=species, variable=var, typ=typ, pheno_tsv=pheno_tsv))
             
             if phenotype_jobs:
@@ -381,41 +381,6 @@ def _worker(
                         
                 except Exception as e:
                     logger.error(f"Association testing failed for {species}: {e}")
-                    # Fallback: create a single file with failed results
-                    logger.info("Creating fallback results file for failed association testing")
-                    fallback_results = []
-                    for var, typ, pheno_tsv in phenotypes:
-                        if not os.path.exists(pheno_tsv):
-                            continue
-                        fallback_results.append({
-                            'species': species,
-                            'metadata': var,
-                            'type': typ,
-                            'pheno_tsv': pheno_tsv,
-                            'test': 'FAILED',
-                            'stat': np.nan,
-                            'pvalue': np.nan,
-                            'n_samples': 0,
-                            'error': str(e)
-                        })
-                    
-                    if fallback_results:
-                        fallback_df = pd.DataFrame(fallback_results)
-                        out_file = assoc_dir/f'{species}.dist_assoc.tsv'
-                        fallback_df.to_csv(out_file, sep='\t', index=False)
-                        logger.info(f"Fallback results for {species} saved to: {out_file}")
-                        
-                        # Convert to individual DataFrames for compatibility
-                        for _, row in fallback_df.iterrows():
-                            result_df = pd.DataFrame([{
-                                'species': row['species'],
-                                'metadata': row['metadata'],
-                                'test': row['test'],
-                                'stat': row['stat'],
-                                'pvalue': row['pvalue'],
-                                'n_samples': row['n_samples']
-                            }])
-                            rows.append(result_df)
 
             # GWAS for binary/continuous phenotypes
             for var, typ, pheno_tsv in phenotypes:
@@ -427,7 +392,7 @@ def _worker(
                     # Check if input files exist
                     if not os.path.exists(uc_pyseer):
                         logger.error(f"Unitig file does not exist: {uc_pyseer}")
-                        continue
+                        raise FileNotFoundError(f"Unitig file does not exist: {uc_pyseer}")
                     
                     # Run pyseer
                     import subprocess
@@ -448,10 +413,10 @@ def _worker(
                             
                     except subprocess.CalledProcessError as e:
                         logger.error(f"Pyseer failed for {species}__{var}: return code {e.returncode}")
-                        continue
+                        raise
                     except Exception as e:
                         logger.error(f"Unexpected error running pyseer for {species}__{var}: {e}")
-                        continue
+                        raise
         
         # Log successful completion
         log_progress(species, 'completed', progress_file)
