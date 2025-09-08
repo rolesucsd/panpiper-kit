@@ -9,7 +9,7 @@ from typing import Dict, List, Tuple, Any
 from .files import list_fastas, ensure_dir, run
 from .filter import filter_metadata_per_species, filter_by_checkm
 from .mash import mash_within_species
-from .assoc import distance_assoc_one, fast_distance_tests
+from .assoc import run_assoc, PhenotypeJob
 from .gwas import ensure_unitigs
 from .fdr import add_bh
 from .summarize_pyseer import summarize_pyseer
@@ -330,70 +330,118 @@ def _worker(
         phenotypes = phenos.get(species, [])
         logger.info(f"Found {len(phenotypes)} phenotypes for {species}")
         
-        for var, typ, pheno_tsv in phenotypes:
-            logger.info(f"Processing phenotype: {var} ({typ})")
-            
-            # Check if phenotype file exists
-            if not os.path.exists(pheno_tsv):
-                logger.error(f"Phenotype file does not exist: {pheno_tsv}")
-                continue
-            
-            # distance test
-            if args.tests == 'exact':
-                logger.info(f"Running exact distance tests (PERMANOVA/Mantel) for {species}__{var} ({typ})")
-                df = distance_assoc_one(str(mash_tsv), pheno_tsv, typ, args.perms)
-            else:
-                logger.info(f"Running fast distance tests for {species}__{var} ({typ})")
-                df = fast_distance_tests(str(mash_tsv), pheno_tsv, typ, max_axes=args.max_axes)
-            
-            # Log the results
-            if df.empty:
-                logger.warning(f"No results from distance test for {species}__{var}")
-                continue
-            
-            logger.info(f"Distance test completed for {species}__{var}: {df.iloc[0].to_dict()}")
-            
-            df['species'] = species
-            df['metadata'] = var
-            out_d = assoc_dir/f'{species}__{var}.dist_assoc.tsv'
-            df.to_csv(out_d, sep='\t', index=False)
-            logger.info(f"Distance association results saved to: {out_d}")
-            rows.append(df)
-
-            # GWAS for binary/continuous
-            if typ in ('binary','continuous'):
-                logger.info(f"Running pyseer GWAS for {species}__{var} ({typ})")
-                
-                out_fp = assoc_dir/f'{species}__{var}.pyseer.tsv'
-                
-                # Check if input files exist
-                if not os.path.exists(uc_pyseer):
-                    logger.error(f"Unitig file does not exist: {uc_pyseer}")
+        if phenotypes:
+            # Create PhenotypeJob objects for the new association testing
+            phenotype_jobs = []
+            for var, typ, pheno_tsv in phenotypes:
+                # Check if phenotype file exists
+                if not os.path.exists(pheno_tsv):
+                    logger.error(f"Phenotype file does not exist: {pheno_tsv}")
                     continue
+                phenotype_jobs.append(PhenotypeJob(species=species, variable=var, typ=typ, pheno_tsv=pheno_tsv))
+            
+            if phenotype_jobs:
+                logger.info(f"Running association tests for {len(phenotype_jobs)} phenotypes using new pipeline")
                 
-                # Run pyseer
-                import subprocess
+                # Run the new association testing pipeline
                 try:
-                    with open(out_fp, 'w') as fh:
-                        cmd = ['pyseer',
-                               '--phenotypes', pheno_tsv,
-                               '--kmers', uc_pyseer, '--uncompressed',
-                               '--min-af', str(args.maf), '--cpu', str(t), '--no-distances']
-                        subprocess.check_call(cmd, stdout=fh, stderr=subprocess.DEVNULL)
+                    results_df = run_assoc(
+                        mash_tsv=str(mash_tsv),
+                        phenos=phenotype_jobs,
+                        n_workers=1,  # Single worker since we're already in a parallel worker
+                        fast_p_thresh=0.10,  # Default threshold for FAST screening
+                        fast_max_axes=args.max_axes,
+                        perm_ladder=(args.perms,) if args.tests == 'exact' else (199,),  # Use exact perms if exact mode
+                        early_stop_p=0.20,
+                        escalate_p1=0.10,
+                        escalate_p2=0.05
+                    )
                     
-                    # Check if output was created and has content
-                    if os.path.exists(out_fp) and os.path.getsize(out_fp) > 0:
-                        logger.info(f"Pyseer completed successfully for {species}__{var}")
-                        add_bh(str(out_fp), str(assoc_dir/f'{species}__{var}.pyseer.fdr.tsv'))
-                    else:
-                        logger.warning(f"Pyseer output is empty for {species}__{var}")
+                    if not results_df.empty:
+                        logger.info(f"Association testing completed for {species}: {len(results_df)} results")
                         
-                except subprocess.CalledProcessError as e:
-                    logger.error(f"Pyseer failed for {species}__{var}: return code {e.returncode}")
-                    continue
+                        # Save results for each phenotype
+                        for _, row in results_df.iterrows():
+                            var = row['metadata']
+                            # Create individual result DataFrame for compatibility
+                            result_df = pd.DataFrame([{
+                                'species': row['species'],
+                                'metadata': row['metadata'],
+                                'test': row['test'],
+                                'stat': row['stat'],
+                                'pvalue': row['pvalue'],
+                                'n_samples': row['n_samples']
+                            }])
+                            
+                            # Add exact test results if available
+                            if 'exact_test' in row and pd.notna(row['exact_test']):
+                                result_df['exact_test'] = row['exact_test']
+                                result_df['exact_stat'] = row['exact_stat']
+                                result_df['exact_pvalue'] = row['exact_pvalue']
+                                result_df['exact_permutations'] = row.get('exact_permutations', np.nan)
+                            
+                            out_d = assoc_dir/f'{species}__{var}.dist_assoc.tsv'
+                            result_df.to_csv(out_d, sep='\t', index=False)
+                            logger.info(f"Distance association results saved to: {out_d}")
+                            rows.append(result_df)
+                    else:
+                        logger.warning(f"No results from association testing for {species}")
+                        
                 except Exception as e:
-                    logger.error(f"Unexpected error running pyseer for {species}__{var}: {e}")
-                    continue
+                    logger.error(f"Association testing failed for {species}: {e}")
+                    # Fallback to individual processing if the new pipeline fails
+                    logger.info("Falling back to individual phenotype processing")
+                    for var, typ, pheno_tsv in phenotypes:
+                        if not os.path.exists(pheno_tsv):
+                            continue
+                        # Create a minimal result for failed phenotypes
+                        result_df = pd.DataFrame([{
+                            'species': species,
+                            'metadata': var,
+                            'test': 'FAILED',
+                            'stat': np.nan,
+                            'pvalue': np.nan,
+                            'n_samples': 0
+                        }])
+                        out_d = assoc_dir/f'{species}__{var}.dist_assoc.tsv'
+                        result_df.to_csv(out_d, sep='\t', index=False)
+                        rows.append(result_df)
+
+            # GWAS for binary/continuous phenotypes
+            for var, typ, pheno_tsv in phenotypes:
+                if typ in ('binary','continuous'):
+                    logger.info(f"Running pyseer GWAS for {species}__{var} ({typ})")
+                    
+                    out_fp = assoc_dir/f'{species}__{var}.pyseer.tsv'
+                    
+                    # Check if input files exist
+                    if not os.path.exists(uc_pyseer):
+                        logger.error(f"Unitig file does not exist: {uc_pyseer}")
+                        continue
+                    
+                    # Run pyseer
+                    import subprocess
+                    try:
+                        with open(out_fp, 'w') as fh:
+                            cmd = ['pyseer',
+                                   '--phenotypes', pheno_tsv,
+                                   '--kmers', uc_pyseer, '--uncompressed',
+                                   '--min-af', str(args.maf), '--cpu', str(t), '--no-distances']
+                            subprocess.check_call(cmd, stdout=fh, stderr=subprocess.DEVNULL)
+                        
+                        # Check if output was created and has content
+                        if os.path.exists(out_fp) and os.path.getsize(out_fp) > 0:
+                            logger.info(f"Pyseer completed successfully for {species}__{var}")
+                            add_bh(str(out_fp), str(assoc_dir/f'{species}__{var}.pyseer.fdr.tsv'))
+                        else:
+                            logger.warning(f"Pyseer output is empty for {species}__{var}")
+                            
+                    except subprocess.CalledProcessError as e:
+                        logger.error(f"Pyseer failed for {species}__{var}: return code {e.returncode}")
+                        continue
+                    except Exception as e:
+                        logger.error(f"Unexpected error running pyseer for {species}__{var}: {e}")
+                        continue
         
         # Log successful completion
         log_progress(species, 'completed', progress_file)
