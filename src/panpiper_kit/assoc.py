@@ -1,294 +1,286 @@
-from typing import Tuple, Union
-import logging
-
-import pandas as pd
+from __future__ import annotations
+import os, logging, json
+from dataclasses import dataclass
+from typing import List, Dict, Tuple, Optional, Iterable
 import numpy as np
+import pandas as pd
+from concurrent.futures import ProcessPoolExecutor, as_completed
+
 from skbio.stats.distance import DistanceMatrix, permanova, mantel
 from scipy.stats import f_oneway, chi2, f as f_dist
 
+# ----------------- logging -----------------
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
-# Constants for statistical tests
+# ----------------- globals per worker -----------------
+_DM: Optional[pd.DataFrame] = None
+_DM_IDS: Optional[List[str]] = None
+
+# ----------------- knobs -----------------
+DEFAULT_FAST_P_THRESH = 0.10         # pass FAST screen if p <= this
+DEFAULT_EARLY_STOP_P = 0.20          # after 199 perms, stop if p > this
+DEFAULT_ESCALATE_P1 = 0.10           # if p <= this at 199, go to 999
+DEFAULT_ESCALATE_P2 = 0.05           # if p <= this at 999, go to 9999
+DEFAULT_PERM_LADDER = (199, 999, 9999)
 DEFAULT_MAX_AXES = 10
-DEFAULT_PERMS = 999
-EIGENVALUE_TOLERANCE = 1e-12
+EIGEN_TOL = 1e-12
 
-# ---------------------------
-# Exact tests (Permutation)
-# ---------------------------
-def distance_assoc_one(mash_tsv: str, pheno_tsv: str, typ: str, perms: int) -> pd.DataFrame:
-    """
-    Perform exact distance-based association tests with permutations.
-    
-    EXACT mode:
-      - binary/categorical -> PERMANOVA (permutations)
-      - continuous         -> Mantel (Spearman, permutations)
-    
-    Args:
-        mash_tsv: Path to Mash distance matrix TSV file
-        pheno_tsv: Path to phenotype TSV file
-        typ: Phenotype type ('binary', 'categorical', or 'continuous')
-        perms: Number of permutations for statistical tests
-        
-    Returns:
-        Single-row DataFrame with columns: species, metadata, n_samples, test, stat, pvalue, permutations
-    """
-    logger.info(f"Starting exact distance association test: {typ} phenotype with {perms} permutations")
-    Dm = pd.read_csv(mash_tsv, sep='\t', index_col=0)
-    # Ensure labels are consistently strings to avoid alignment/sort issues
+# --------------- worker init ----------------
+def _init_worker(mash_tsv: str):
+    """Load Mash distance matrix once per process."""
+    global _DM, _DM_IDS
+    Dm = pd.read_csv(mash_tsv, sep="\t", index_col=0)
     Dm.index = Dm.index.astype(str)
     Dm.columns = Dm.columns.astype(str)
-    # symmetrize and zero diagonal
-    Dm = (Dm + Dm.T) / 2
+    Dm = (Dm + Dm.T) / 2.0
     np.fill_diagonal(Dm.values, 0.0)
+    _DM = Dm
+    _DM_IDS = list(Dm.index)
 
-    ph = pd.read_csv(pheno_tsv, sep='\t').dropna(subset=['phenotype'])
-    
-    # Inner join: only keep samples that have both Mash distances AND phenotype values
-    common_samples = set(Dm.index) & set(ph['sample'])
-    logger.info(f"Found {len(common_samples)} samples with both Mash distances and phenotype values")
-    
-    if len(common_samples) < 4:
-        logger.warning(f"Too few samples ({len(common_samples)}) for exact distance test, returning NA result")
-        species = pheno_tsv.split('/')[-1].split('__')[0]
-        variable = '__'.join(pheno_tsv.split('/')[-1].split('__')[1:]).replace('.pheno.tsv','')
-        return pd.DataFrame([{
-            'species': species, 'metadata': variable, 'n_samples': len(common_samples),
-            'test': 'NA', 'stat': np.nan, 'R2': np.nan, 'pvalue': np.nan,
-            'permutations': perms
-        }])
-    
-    # Filter to common samples only
-    keep = list(common_samples)
-    species = pheno_tsv.split('/')[-1].split('__')[0]
-    variable = '__'.join(pheno_tsv.split('/')[-1].split('__')[1:]).replace('.pheno.tsv','')
-    logger.info(f"Processing {len(keep)} samples for exact distance test")
+# --------------- small utils ----------------
+def _align_common(ph: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray, List[str]]:
+    """Return (D_sub, y, ids) aligned to samples with non-missing phenotype."""
+    assert _DM is not None and _DM_IDS is not None
+    ph = ph.dropna(subset=['phenotype']).copy()
+    ph['sample'] = ph['sample'].astype(str)
+    # keep in matrix order for consistency
+    keep_ids = [sid for sid in _DM_IDS if sid in set(ph['sample'])]
+    if len(keep_ids) < 4:
+        return np.empty((0,0)), np.array([]), []
+    y = ph.set_index('sample').loc[keep_ids, 'phenotype'].values
+    D = _DM.loc[keep_ids, keep_ids].values
+    return D, y, keep_ids
 
-    Dm = Dm.loc[keep, keep]
-    DM = DistanceMatrix(Dm.values, keep)
+def _cont_distance(vec: pd.Series) -> np.ndarray:
+    x = vec.dropna().astype(float).values
+    if len(x) == 0 or np.nanstd(x) == 0.0:
+        n = len(vec)
+        return np.zeros((n, n))
+    z = (x - np.mean(x)) / (np.std(x, ddof=0))
+    return np.sqrt((z[:, None] - z[None, :]) ** 2)
 
-    if typ in ('binary','categorical'):
-        logger.info(f"Running PERMANOVA for {typ} phenotype with {len(keep)} samples")
-        grp = ph.set_index('sample').loc[keep, 'phenotype'].astype(str).values
-        res = permanova(dm=DM, grouping=grp, permutations=perms)
-        logger.info(f"PERMANOVA result: F={res['test statistic']:.4f}, p={res['p-value']:.4f}")
-        row = dict(species=species, metadata=variable, n_samples=len(keep),
-                   test='PERMANOVA', stat=float(res['test statistic']),
-                   R2=np.nan, pvalue=float(res['p-value']), permutations=perms)
-    else:
-        logger.info(f"Running Mantel test for continuous phenotype with {len(keep)} samples")
-        v = ph.set_index('sample').loc[keep, 'phenotype']
-        # Check for zero variance, handling NaN values properly
-        try:
-            std_val = v.std(ddof=0)
-            if v.dropna().nunique() < 2 or pd.isna(std_val) or float(std_val) == 0.0:
-                logger.warning(f"Zero variance detected in continuous phenotype, returning NA result")
-                row = dict(species=species, metadata=variable, n_samples=len(keep),
-                           test='Mantel_spearman', stat=np.nan, R2=np.nan, pvalue=np.nan, permutations=perms)
-            else:
-                DX = DistanceMatrix(_cont_distance(v), keep)
-                r, p, n = mantel(DM, DX, method='spearman', permutations=perms, alternative='two-sided')
-                logger.info(f"Mantel test result: r={r:.4f}, p={p:.4f}, n={n}")
-                row = dict(species=species, metadata=variable, n_samples=len(keep),
-                           test='Mantel_spearman', stat=float(r), R2=np.nan, pvalue=float(p), permutations=perms)
-        except (ValueError, TypeError) as e:
-            logger.error(f"Error in Mantel test: {e}")
-            row = dict(species=species, metadata=variable, n_samples=len(keep),
-                       test='Mantel_spearman', stat=np.nan, R2=np.nan, pvalue=np.nan, permutations=perms)
-    return pd.DataFrame([row])
+def _pcoa_scores(D: np.ndarray, max_axes: int = DEFAULT_MAX_AXES, euclid_correction: str = "lingoes"
+                 ) -> Tuple[np.ndarray, np.ndarray, Dict[str, float]]:
+    """PCoA with optional Lingoes correction; returns (scores, eigvals, diag)."""
+    n = D.shape[0]
+    J = np.eye(n) - np.ones((n, n))/n
+    B = -0.5 * (J @ (D**2) @ J)
+    eigvals, eigvecs = np.linalg.eigh(B)  # ascending
+    neg_sum = float(np.abs(eigvals[eigvals < 0]).sum()) if np.any(eigvals < 0) else 0.0
 
-# ---------------------------
-# FAST tests (No permutations)
-# ---------------------------
+    if euclid_correction == "lingoes" and np.any(eigvals < -EIGEN_TOL):
+        c = -float(eigvals.min()) + 1e-12
+        eigvals = eigvals + c
 
-def fast_distance_tests(mash_tsv: str, pheno_tsv: str, typ: str, max_axes: int = DEFAULT_MAX_AXES) -> pd.DataFrame:
-    """
-    Perform fast distance-based association tests without permutations.
-    
-    FAST mode (no permutations):
-      - Compute PCoA (via Gower centering + eigendecomposition).
-      - Categorical/Binary: ANOVA on top K axes; combine p-values with Fisher's method.
-      - Continuous: OLS of phenotype ~ top K axes; F-test (model vs null).
+    pos_mask = eigvals > EIGEN_TOL
+    if not np.any(pos_mask):
+        # pathological; keep dominant
+        idx = np.argsort(eigvals)[::-1][:1]
+        L = np.abs(eigvals[idx])
+        V = eigvecs[:, idx]
+        scores = V * np.sqrt(L)
+        return scores, L, {"neg_inertia": neg_sum, "k": scores.shape[1]}
 
-    Args:
-        mash_tsv: Path to Mash distance matrix TSV file
-        pheno_tsv: Path to phenotype TSV file
-        typ: Phenotype type ('binary', 'categorical', or 'continuous')
-        max_axes: Maximum number of PCoA axes to use in analysis
-        
-    Returns:
-        Single-row DataFrame with columns: n_samples, test, stat, pvalue
-    """
-    logger.info(f"Starting fast distance association test: {typ} phenotype with max_axes={max_axes}")
-    # Load and symmetrize distances
-    Dm = pd.read_csv(mash_tsv, sep='\t', index_col=0)
-    # Ensure labels are consistently strings to avoid alignment/sort issues
-    Dm.index = Dm.index.astype(str)
-    Dm.columns = Dm.columns.astype(str)
-    Dm = (Dm + Dm.T) / 2
-    np.fill_diagonal(Dm.values, 0.0)
-    labels = list(Dm.index)
-    n = len(labels)
-    if n < 4:
-        logger.warning(f"Too few samples ({n}) for fast distance test, returning NA result")
-        return pd.DataFrame([{'n_samples': n, 'test': 'FAST', 'stat': np.nan, 'pvalue': np.nan}])
+    eigvals = eigvals[pos_mask]
+    eigvecs = eigvecs[:, pos_mask]
+    order = np.argsort(eigvals)[::-1]
+    eigvals = eigvals[order]
+    eigvecs = eigvecs[:, order]
+    scores = eigvecs * np.sqrt(eigvals)
+    k = max(1, min(max_axes, scores.shape[1]))
+    return scores[:, :k], eigvals[:k], {"neg_inertia": neg_sum, "k": k}
 
-    # Align phenotype - inner join: only keep samples with both Mash distances AND phenotype values
-    ph = pd.read_csv(pheno_tsv, sep='\t').dropna(subset=['phenotype'])
-    common_samples = set(labels) & set(ph['sample'])
-    logger.info(f"Found {len(common_samples)} samples with both Mash distances and phenotype values")
-    
-    if len(common_samples) < 4:
-        logger.warning(f"Too few samples ({len(common_samples)}) for fast distance test, returning NA result")
-        return pd.DataFrame([{'n_samples': len(common_samples), 'test': 'FAST', 'stat': np.nan, 'pvalue': np.nan}])
-    
-    # Filter to common samples and create mask
-    ph_filtered = ph[ph['sample'].isin(common_samples)].set_index('sample').loc[list(common_samples)]
-    keep_mask = ph_filtered['phenotype'].notna().values
-    logger.info(f"Processing {keep_mask.sum()} samples for fast distance test")
+# --------------- FAST tests (screen) ----------------
+def _fast_test(pheno_tsv: str, typ: str, max_axes: int = DEFAULT_MAX_AXES
+               ) -> Dict[str, object]:
+    ph = pd.read_csv(pheno_tsv, sep="\t")
+    D, y, ids = _align_common(ph)
+    if len(ids) < 4:
+        return {"n_samples": len(ids), "test": "FAST", "stat": np.nan, "pvalue": np.nan}
 
-    # Subset to non-missing samples consistently
-    D = Dm.values[np.ix_(keep_mask, keep_mask)]
-    y = ph_filtered['phenotype'].values[keep_mask]
-    labs = np.array(list(common_samples))[keep_mask]
-    n_eff = len(labs)
-
-    # PCoA: double-center and eigendecompose
-    X_pc, eigvals = _pcoa_scores(D, max_axes=max_axes)
-    logger.info(f"PCoA computed: {X_pc.shape} scores, {len(eigvals)} eigenvalues")
-
-    if typ in ('binary','categorical'):
-        logger.info(f"Running fast ANOVA for {typ} phenotype with {n_eff} samples")
+    Xpc, eigvals, diag = _pcoa_scores(D, max_axes=max_axes, euclid_correction="lingoes")
+    n = len(ids)
+    if typ in ("binary", "categorical"):
         groups = y.astype(str)
         pvals = []
-        for a in range(X_pc.shape[1]):
-            buckets = [X_pc[groups == g, a] for g in np.unique(groups)]
-            # valid ANOVA only if ≥2 non-empty groups
-            if len(buckets) < 2 or any(len(b)==0 for b in buckets):
+        for a in range(Xpc.shape[1]):
+            buckets = [Xpc[groups == g, a] for g in np.unique(groups)]
+            if len(buckets) < 2 or any(len(b) == 0 for b in buckets):
                 continue
             fstat, p = f_oneway(*buckets)
-            pvals.append(p)
+            if np.isfinite(p):
+                pvals.append(p)
         if not pvals:
-            logger.warning("No valid ANOVA tests for fast distance test, returning NA")
             stat = np.nan; p_comb = np.nan
         else:
             stat = -2.0 * np.sum(np.log(pvals))
             p_comb = 1.0 - chi2.cdf(stat, 2 * len(pvals))
-            logger.info(f"Fast ANOVA result: combined stat={stat:.4f}, p={p_comb:.4f}")
-        return pd.DataFrame([{
-            'n_samples': n_eff, 'test': 'FAST_ANOVA_PC', 'stat': stat, 'pvalue': p_comb
-        }])
+        return {"n_samples": n, "test": "FAST_ANOVA_PC", "stat": float(stat), "pvalue": float(p_comb),
+                "neg_inertia": diag["neg_inertia"], "k_axes": diag["k"]}
     else:
-        logger.info(f"Running fast OLS for continuous phenotype with {n_eff} samples")
-        # Continuous: OLS on PCs, F-test
         y = y.astype(float)
-        # drop if zero variance
         if np.nanstd(y) == 0.0:
-            logger.warning("Zero variance detected in continuous phenotype for fast test, returning NA")
-            return pd.DataFrame([{'n_samples': n_eff, 'test':'FAST_OLS_PC', 'stat': np.nan, 'pvalue': np.nan}])
-        X = np.column_stack([np.ones(n_eff), X_pc])  # intercept + PCs
+            return {"n_samples": n, "test": "FAST_OLS_PC", "stat": np.nan, "pvalue": np.nan,
+                    "neg_inertia": diag["neg_inertia"], "k_axes": diag["k"]}
+        X = np.column_stack([np.ones(n), Xpc])
         XtX = X.T @ X
         try:
             beta = np.linalg.solve(XtX, X.T @ y)
         except np.linalg.LinAlgError:
-            # fallback: pseudo-inverse
-            logger.info("Using pseudo-inverse for OLS")
             beta = np.linalg.pinv(XtX) @ (X.T @ y)
         yhat = X @ beta
-        rss = np.sum((y - yhat)**2)
-        tss = np.sum((y - y.mean())**2)
-        p = X_pc.shape[1]
+        rss = float(np.sum((y - yhat) ** 2))
+        tss = float(np.sum((y - np.nanmean(y)) ** 2))
+        p = Xpc.shape[1]
         df1 = p
-        df2 = n_eff - (p + 1)
+        df2 = n - (p + 1)
         if df2 <= 0 or tss == 0:
-            logger.warning("Invalid degrees of freedom or zero TSS for fast OLS, returning NA")
-            return pd.DataFrame([{'n_samples': n_eff, 'test':'FAST_OLS_PC', 'stat': np.nan, 'pvalue': np.nan}])
+            return {"n_samples": n, "test": "FAST_OLS_PC", "stat": np.nan, "pvalue": np.nan,
+                    "neg_inertia": diag["neg_inertia"], "k_axes": diag["k"]}
         R2 = 1 - rss / tss
         F = (R2/df1) / ((1-R2)/df2) if (1-R2) > 0 else np.inf
         pval = 1.0 - f_dist.cdf(F, df1, df2)
-        logger.info(f"Fast OLS result: R2={R2:.4f}, F={F:.4f}, p={pval:.4f}")
-        return pd.DataFrame([{'n_samples': n_eff, 'test':'FAST_OLS_PC', 'stat': F, 'pvalue': pval}])
+        return {"n_samples": n, "test": "FAST_OLS_PC", "stat": float(F), "pvalue": float(pval),
+                "neg_inertia": diag["neg_inertia"], "k_axes": diag["k"], "R2": float(R2)}
 
-# ---------------------------
-# Helpers
-# ---------------------------
+# --------------- EXACT tests (permutations) --------------
+def _permutation_test(pheno_tsv: str, typ: str, perms: int) -> Dict[str, object]:
+    """One-shot exact test at a given permutations count."""
+    assert _DM is not None
+    ph = pd.read_csv(pheno_tsv, sep="\t").dropna(subset=['phenotype'])
+    # align
+    keep = [sid for sid in _DM.index if sid in set(ph['sample'])]
+    if len(keep) < 4:
+        return {"n_samples": len(keep), "test": "NA", "stat": np.nan, "pvalue": np.nan, "permutations": perms}
+    DM = DistanceMatrix(_DM.loc[keep, keep].values, keep)
+    if typ in ("binary", "categorical"):
+        grp = ph.set_index('sample').loc[keep, 'phenotype'].astype(str).values
+        res = permanova(dm=DM, grouping=grp, permutations=perms)
+        return {"n_samples": len(keep), "test": "PERMANOVA", "stat": float(res['test statistic']),
+                "pvalue": float(res['p-value']), "permutations": perms}
+    else:
+        v = ph.set_index('sample').loc[keep, 'phenotype']
+        if v.dropna().nunique() < 2:
+            return {"n_samples": len(keep), "test": "Mantel_spearman",
+                    "stat": np.nan, "pvalue": np.nan, "permutations": perms}
+        DX = DistanceMatrix(_cont_distance(v), keep)
+        r, p, n = mantel(DM, DX, method='spearman', permutations=perms, alternative='two-sided')
+        return {"n_samples": n, "test": "Mantel_spearman", "stat": float(r),
+                "pvalue": float(p), "permutations": perms}
 
-def _cont_distance(vec: pd.Series) -> np.ndarray:
+def _adaptive_exact(pheno_tsv: str, typ: str,
+                    perm_ladder: Iterable[int] = DEFAULT_PERM_LADDER,
+                    early_stop_p: float = DEFAULT_EARLY_STOP_P,
+                    escalate_p1: float = DEFAULT_ESCALATE_P1,
+                    escalate_p2: float = DEFAULT_ESCALATE_P2) -> Dict[str, object]:
     """
-    Compute Euclidean distance matrix from standardized continuous vector.
-    
-    Args:
-        vec: Input pandas Series with continuous values
-        
-    Returns:
-        Distance matrix as numpy array
+    Adaptive permutation ladder:
+      - run smallest perms,
+      - stop early if clearly not significant,
+      - escalate if promising.
     """
-    # Handle NaN values and zero variance
-    vec_clean = vec.dropna()
-    if len(vec_clean) == 0 or vec_clean.std(ddof=0) == 0.0:
-        # Return zero distance matrix if no valid data or zero variance
-        n = len(vec)
-        return np.zeros((n, n))
-    
-    z = (vec_clean - vec_clean.mean()) / vec_clean.std(ddof=0)
-    return np.sqrt((z.values[:,None] - z.values[None,:])**2)
+    results = {}
+    p_last = None
+    for i, perms in enumerate(perm_ladder):
+        res = _permutation_test(pheno_tsv, typ, perms=perms)
+        p_last = res.get("pvalue", np.nan)
+        results = res
+        # early stop after first rung if unpromising
+        if i == 0 and (np.isnan(p_last) or p_last > early_stop_p):
+            break
+        # escalate decisions
+        if i == 0 and p_last <= escalate_p1:
+            continue
+        if i == 1 and p_last <= escalate_p2:
+            continue
+        # otherwise stop
+        if i >= 1:
+            break
+    return results
 
-def _pcoa_scores(D: np.ndarray, max_axes: int = DEFAULT_MAX_AXES) -> Tuple[np.ndarray, np.ndarray]:
-    """
-    Perform classical MDS/PCoA on a distance matrix.
-    
-    Args:
-        D: Input distance matrix
-        max_axes: Maximum number of axes to return
-        
-    Returns:
-        Tuple of (scores, eigenvalues) keeping only positive-eigenvalue axes (up to max_axes)
-    """
-    n = D.shape[0]
-    
-    # Gower centering: B = -0.5 * J * D^2 * J
-    J = np.eye(n) - np.ones((n, n)) / n
-    B = -0.5 * (J @ (D**2) @ J)
-    
-    # Eigendecomposition
-    eigvals, eigvecs = np.linalg.eigh(B)  # ascending order
-    
-    # Filter positive eigenvalues (numerical tolerance)
-    pos_mask = eigvals > EIGENVALUE_TOLERANCE
-    
-    if not np.any(pos_mask):
-        # Pathological case: return first axis to avoid crashes
-        return _handle_pathological_case(eigvals, eigvecs, max_axes)
-    
-    # Keep only positive eigenvalues and sort descending
-    eigvals = eigvals[pos_mask]
-    eigvecs = eigvecs[:, pos_mask]
-    order = np.argsort(eigvals)[::-1]  # descending order
-    eigvals = eigvals[order]
-    eigvecs = eigvecs[:, order]
-    
-    # Compute scores: V * sqrt(lambda)
-    scores = eigvecs * np.sqrt(eigvals)
-    
-    # Return up to max_axes
-    k = max(1, min(max_axes, scores.shape[1]))
-    return scores[:, :k], eigvals[:k]
+# --------------- Orchestrator -----------------
+@dataclass
+class PhenotypeJob:
+    species: str
+    variable: str
+    typ: str
+    pheno_tsv: str
 
+def run_assoc(
+    mash_tsv: str,
+    phenos: List[PhenotypeJob],
+    *,
+    n_workers: int = os.cpu_count() or 4,
+    fast_p_thresh: float = DEFAULT_FAST_P_THRESH,
+    fast_max_axes: int = DEFAULT_MAX_AXES,
+    perm_ladder: Iterable[int] = DEFAULT_PERM_LADDER,
+    early_stop_p: float = DEFAULT_EARLY_STOP_P,
+    escalate_p1: float = DEFAULT_ESCALATE_P1,
+    escalate_p2: float = DEFAULT_ESCALATE_P2,
+) -> pd.DataFrame:
+    """
+    Parallel pipeline:
+      1) FAST screen across all phenotypes
+      2) Adaptive exact test for promising phenotypes
+    Returns one DataFrame with FAST + EXACT fields merged.
+    """
+    # --- FAST in parallel ---
+    logger.info(f"[FAST] screening {len(phenos)} phenotypes using {n_workers} workers")
+    fast_rows: List[Dict[str, object]] = []
+    with ProcessPoolExecutor(max_workers=n_workers, initializer=_init_worker, initargs=(mash_tsv,)) as ex:
+        fut2meta = {}
+        for job in phenos:
+            fut = ex.submit(_fast_test, job.pheno_tsv, job.typ, fast_max_axes)
+            fut2meta[fut] = job
+        for fut in as_completed(fut2meta):
+            job = fut2meta[fut]
+            try:
+                out = fut.result()
+            except Exception as e:
+                out = {"n_samples": np.nan, "test":"FAST", "stat": np.nan, "pvalue": np.nan, "error": str(e)}
+            out.update({"species": job.species, "metadata": job.variable, "type": job.typ, "pheno_tsv": job.pheno_tsv})
+            fast_rows.append(out)
+    fast_df = pd.DataFrame(fast_rows)
 
-def _handle_pathological_case(eigvals: np.ndarray, eigvecs: np.ndarray, max_axes: int) -> Tuple[np.ndarray, np.ndarray]:
-    """
-    Handle pathological case where no positive eigenvalues exist.
-    
-    Args:
-        eigvals: All eigenvalues
-        eigvecs: All eigenvectors
-        max_axes: Maximum number of axes to return
-        
-    Returns:
-        Tuple of (scores, eigenvalues) using the largest magnitude eigenvalue
-    """
-    idx = np.argsort(eigvals)[::-1][:1]  # largest magnitude
-    L = np.abs(eigvals[idx])
-    V = eigvecs[:, idx]
-    scores = V * np.sqrt(L)
-    return scores[:, :min(max_axes, scores.shape[1])], L
+    # --- choose promising ---
+    keep_mask = (fast_df['pvalue'] <= fast_p_thresh) & fast_df['pvalue'].notna()
+    todo = fast_df[keep_mask].copy()
+    logger.info(f"[FAST] {keep_mask.sum()} / {len(fast_df)} pass (p ≤ {fast_p_thresh}) → exact tests")
+
+    # --- EXACT (adaptive) in parallel ---
+    exact_rows: List[Dict[str, object]] = []
+    if len(todo):
+        with ProcessPoolExecutor(max_workers=n_workers, initializer=_init_worker, initargs=(mash_tsv,)) as ex:
+            fut2meta = {}
+            for _, r in todo.iterrows():
+                fut = ex.submit(_adaptive_exact, r['pheno_tsv'], r['type'],
+                                perm_ladder, early_stop_p, escalate_p1, escalate_p2)
+                fut2meta[fut] = (r['species'], r['metadata'], r['type'], r['pheno_tsv'])
+            for fut in as_completed(fut2meta):
+                sp, var, typ, pth = fut2meta[fut]
+                try:
+                    res = fut.result()
+                except Exception as e:
+                    res = {"n_samples": np.nan, "test":"NA", "stat": np.nan, "pvalue": np.nan,
+                           "permutations": np.nan, "error": str(e)}
+                res.update({"species": sp, "metadata": var, "type": typ, "pheno_tsv": pth})
+                exact_rows.append(res)
+    exact_df = pd.DataFrame(exact_rows)
+
+    # --- merge & return ---
+    out = fast_df.merge(
+        exact_df.add_prefix("exact_"),
+        left_on=["species","metadata","type","pheno_tsv"],
+        right_on=["exact_species","exact_metadata","exact_type","exact_pheno_tsv"],
+        how="left"
+    )
+    # pretty columns
+    keep_cols = [
+        "species","metadata","type","pheno_tsv",
+        "n_samples","test","stat","pvalue","neg_inertia","k_axes","R2",
+        "exact_n_samples","exact_test","exact_stat","exact_pvalue","exact_permutations","exact_error"
+    ]
+    for c in keep_cols:
+        if c not in out.columns: out[c] = np.nan
+    return out[keep_cols].sort_values(["species","metadata"])

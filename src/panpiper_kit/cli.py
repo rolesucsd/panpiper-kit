@@ -337,7 +337,7 @@ def _worker(
                 # Check if phenotype file exists
                 if not os.path.exists(pheno_tsv):
                     logger.error(f"Phenotype file does not exist: {pheno_tsv}")
-                    raise FileNotFoundError(f"Phenotype file does not exist: {pheno_tsv}")
+                    continue
                 phenotype_jobs.append(PhenotypeJob(species=species, variable=var, typ=typ, pheno_tsv=pheno_tsv))
             
             if phenotype_jobs:
@@ -392,7 +392,7 @@ def _worker(
                     # Check if input files exist
                     if not os.path.exists(uc_pyseer):
                         logger.error(f"Unitig file does not exist: {uc_pyseer}")
-                        raise FileNotFoundError(f"Unitig file does not exist: {uc_pyseer}")
+                        continue
                     
                     # Run pyseer
                     import subprocess
@@ -413,10 +413,10 @@ def _worker(
                             
                     except subprocess.CalledProcessError as e:
                         logger.error(f"Pyseer failed for {species}__{var}: return code {e.returncode}")
-                        raise
+                        continue
                     except Exception as e:
                         logger.error(f"Unexpected error running pyseer for {species}__{var}: {e}")
-                        raise
+                        continue
         
         # Log successful completion
         log_progress(species, 'completed', progress_file)
