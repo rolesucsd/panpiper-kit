@@ -365,17 +365,9 @@ def _worker(
                         results_df.to_csv(out_file, sep='\t', index=False)
                         logger.info(f"All distance association results for {species} saved to: {out_file}")
                         
-                        # Convert to individual DataFrames for compatibility with existing code
+                        # Keep all columns from run_assoc for downstream aggregation
                         for _, row in results_df.iterrows():
-                            result_df = pd.DataFrame([{
-                                'species': row['species'],
-                                'metadata': row['metadata'],
-                                'test': row['test'],
-                                'stat': row['stat'],
-                                'pvalue': row['pvalue'],
-                                'n_samples': row['n_samples']
-                            }])
-                            rows.append(result_df)
+                            rows.append(pd.DataFrame([row.to_dict()]))
                     else:
                         logger.warning(f"No results from association testing for {species}")
                         
