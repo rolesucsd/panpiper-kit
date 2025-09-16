@@ -156,9 +156,14 @@ def _permutation_test(pheno_tsv: str, typ: str, perms: int) -> Dict[str, object]
     DM = DistanceMatrix(_DM.loc[keep, keep].values, keep)
     if typ in ("binary", "categorical"):
         grp = ph.set_index('sample').loc[keep, 'phenotype'].astype(str).values
-        res = permanova(dm=DM, grouping=grp, permutations=perms)
-        return {"n_samples": len(keep), "test": "PERMANOVA", "stat": float(res['test statistic']),
-                "pvalue": float(res['p-value']), "permutations": perms}
+        res = permanova(DM, grouping=grp, permutations=perms)
+        return {
+            "n_samples": len(keep),
+            "test": "PERMANOVA",
+            "stat": float(res['test statistic']),
+            "pvalue": float(res['p-value']),
+            "permutations": perms
+        }
     else:
         v = ph.set_index('sample').loc[keep, 'phenotype']
         if v.dropna().nunique() < 2:
