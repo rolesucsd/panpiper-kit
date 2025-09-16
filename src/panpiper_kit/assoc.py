@@ -18,7 +18,7 @@ _DM: Optional[pd.DataFrame] = None
 _DM_IDS: Optional[List[str]] = None
 
 # ----------------- knobs -----------------
-DEFAULT_FAST_P_THRESH = 0.10         # pass FAST screen if p <= this
+DEFAULT_FAST_P_THRESH = 0.50         # pass FAST screen if p <= this
 DEFAULT_EARLY_STOP_P = 0.20          # after 199 perms, stop if p > this
 DEFAULT_ESCALATE_P1 = 0.10           # if p <= this at 199, go to 999
 DEFAULT_ESCALATE_P2 = 0.05           # if p <= this at 999, go to 9999
