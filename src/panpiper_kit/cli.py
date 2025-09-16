@@ -429,6 +429,7 @@ def _worker(
                     # Write pairwise outputs in the same folder as main association tests
                     pair_dir = assoc_dir
                     pairwise_outputs = []
+                    pairwise_results = []  # Store pairwise PERMANOVA results
                     for _, r in sig_cat.iterrows():
                         var = r['metadata']
                         src = [x for x in phenotypes if x[0] == var]
@@ -449,6 +450,15 @@ def _worker(
                             tmp = pair_dir / f"{species}__{var}__{g}_vs_rest.binary.tsv"
                             ph_bin[['sample','phenotype']].to_csv(tmp, sep='\t', index=False)
                             res = _assoc_permutation_test(str(tmp), 'binary', perms=args.perms)
+                            # Store pairwise PERMANOVA result
+                            res['species'] = species
+                            res['metadata'] = var
+                            res['comparison'] = f"{g}_vs_rest"
+                            res['group1'] = g
+                            res['group2'] = "rest"
+                            res['n_group1'] = n_g
+                            res['n_group2'] = n_rest
+                            pairwise_results.append(res)
                             if pd.notna(res.get('pvalue')) and res.get('pvalue') <= 0.05:
                                 # Run pyseer if sufficiently large groups
                                 if n_g >= args.pair_pyseer_min_n and n_rest >= args.pair_pyseer_min_n:
@@ -472,6 +482,15 @@ def _worker(
                             tmp = pair_dir / f"{species}__{var}__{g1}_vs_{g2}.binary.tsv"
                             sub[['sample','phenotype']].to_csv(tmp, sep='\t', index=False)
                             res = _assoc_permutation_test(str(tmp), 'binary', perms=args.perms)
+                            # Store pairwise PERMANOVA result
+                            res['species'] = species
+                            res['metadata'] = var
+                            res['comparison'] = f"{g1}_vs_{g2}"
+                            res['group1'] = g1
+                            res['group2'] = g2
+                            res['n_group1'] = n1
+                            res['n_group2'] = n2
+                            pairwise_results.append(res)
                             if pd.notna(res.get('pvalue')) and res.get('pvalue') <= 0.05:
                                 if n1 >= args.pair_pyseer_min_n and n2 >= args.pair_pyseer_min_n:
                                     import subprocess
@@ -481,6 +500,13 @@ def _worker(
                                                '--min-af', str(args.maf), '--cpu', str(t), '--no-distances']
                                         subprocess.check_call(cmd, stdout=fh, stderr=subprocess.DEVNULL)
                                     pairwise_outputs.append(out_fp)
+                    # Save pairwise PERMANOVA results
+                    if pairwise_results:
+                        pairwise_df = pd.DataFrame(pairwise_results)
+                        pairwise_file = assoc_dir / f"{species}.pairwise_assoc.tsv"
+                        pairwise_df.to_csv(pairwise_file, sep='\t', index=False)
+                        logger.info(f"Saved pairwise association results: {pairwise_file}")
+                    
                     # Combine per-species pairwise pyseer outputs
                     if pairwise_outputs:
                         parts = []
