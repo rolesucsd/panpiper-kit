@@ -426,8 +426,8 @@ def _worker(
                 if not sig_cat.empty:
                     # Initialize DM in this process so we can reuse the exact test function
                     _assoc_init_worker(str(mash_tsv))
-                    pair_dir = assoc_dir / species / 'pairwise'
-                    pair_dir.mkdir(parents=True, exist_ok=True)
+                    # Write pairwise outputs in the same folder as main association tests
+                    pair_dir = assoc_dir
                     pairwise_outputs = []
                     for _, r in sig_cat.iterrows():
                         var = r['metadata']
