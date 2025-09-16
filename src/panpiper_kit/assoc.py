@@ -149,19 +149,19 @@ def _permutation_test(pheno_tsv: str, typ: str, perms: int) -> Dict[str, object]
     """One-shot exact test at a given permutations count."""
     assert _DM is not None
     ph = pd.read_csv(pheno_tsv, sep="\t").dropna(subset=['phenotype'])
-    # align
+
+    # Align in distance-matrix order
     keep = [sid for sid in _DM.index if sid in set(ph['sample'])]
     if len(keep) < 4:
         return {"n_samples": len(keep), "test": "NA", "stat": np.nan, "pvalue": np.nan, "permutations": perms}
 
-    _DM = _DM.loc[keep, keep].to_numpy(dtype=float, copy=True)
-    _DM = 0.5 * (_DM + _DM.T)
-    np.fill_diagonal(_DM, 0.0)
-
-    DM = DistanceMatrix(_DM, ids=keep)   # proper DistanceMatrix object
+    mat = _DM.loc[keep, keep].to_numpy(dtype=float, copy=True)  # C-contiguous
+    mat = 0.5 * (mat + mat.T)                                  # enforce symmetry
+    np.fill_diagonal(mat, 0.0)
+    DM = DistanceMatrix(mat, ids=keep)
 
     if typ in ("binary", "categorical"):
-        grp = ph.set_index('sample').loc[keep, 'phenotype'].astype(str).values
+        grp = ph.set_index('sample').loc[keep, 'phenotype'].astype(str).to_numpy()
         res = permanova(DM, grouping=grp, permutations=perms)
         return {
             "n_samples": len(keep),
@@ -175,10 +175,12 @@ def _permutation_test(pheno_tsv: str, typ: str, perms: int) -> Dict[str, object]
         if v.dropna().nunique() < 2:
             return {"n_samples": len(keep), "test": "Mantel_spearman",
                     "stat": np.nan, "pvalue": np.nan, "permutations": perms}
-        DX = DistanceMatrix(_cont_distance(v), keep)
+
+        DX = DistanceMatrix(np.ascontiguousarray(_cont_distance(v), dtype=float), ids=keep)
         r, p, n = mantel(DM, DX, method='spearman', permutations=perms, alternative='two-sided')
-        return {"n_samples": n, "test": "Mantel_spearman", "stat": float(r),
+        return {"n_samples": int(n), "test": "Mantel_spearman", "stat": float(r),
                 "pvalue": float(p), "permutations": perms}
+
 
 def _adaptive_exact(pheno_tsv: str, typ: str,
                     perm_ladder: Iterable[int] = DEFAULT_PERM_LADDER,
