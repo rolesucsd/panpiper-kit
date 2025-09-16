@@ -3,13 +3,14 @@ import logging
 import pathlib
 import pandas as pd
 import os
+import itertools
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from typing import Dict, List, Tuple, Any
 
 from .files import list_fastas, ensure_dir, run
 from .filter import filter_metadata_per_species, filter_by_checkm
 from .mash import mash_within_species
-from .assoc import run_assoc, PhenotypeJob
+from .assoc import run_assoc, PhenotypeJob, _init_worker as _assoc_init_worker, _permutation_test as _assoc_permutation_test
 from .gwas import ensure_unitigs
 from .fdr import add_bh
 from .summarize_pyseer import summarize_pyseer
@@ -409,6 +410,93 @@ def _worker(
                     except Exception as e:
                         logger.error(f"Unexpected error running pyseer for {species}__{var}: {e}")
                         continue
+
+            # Pairwise testing for categorical phenotypes with significant global association
+            try:
+                if 'exact_test' in locals() or 'results_df' in locals():
+                    df_for_pairs = results_df if 'results_df' in locals() else pd.DataFrame()
+                else:
+                    df_for_pairs = pd.DataFrame()
+                if not df_for_pairs.empty:
+                    sig_cat = df_for_pairs[(df_for_pairs['type'] == 'categorical') &
+                                           (df_for_pairs['exact_test'] == 'PERMANOVA') &
+                                           (df_for_pairs['exact_pvalue'] <= 0.05)].copy()
+                else:
+                    sig_cat = pd.DataFrame()
+                if not sig_cat.empty:
+                    # Initialize DM in this process so we can reuse the exact test function
+                    _assoc_init_worker(str(mash_tsv))
+                    pair_dir = assoc_dir / species / 'pairwise'
+                    pair_dir.mkdir(parents=True, exist_ok=True)
+                    pairwise_outputs = []
+                    for _, r in sig_cat.iterrows():
+                        var = r['metadata']
+                        src = [x for x in phenotypes if x[0] == var]
+                        if not src:
+                            continue
+                        pheno_tsv = src[0][2]
+                        ph = pd.read_csv(pheno_tsv, sep='\t').dropna(subset=['phenotype'])
+                        ph['phenotype'] = ph['phenotype'].astype(str)
+                        groups = sorted(ph['phenotype'].unique())
+                        # One-vs-rest
+                        for g in groups:
+                            ph_bin = ph.copy()
+                            ph_bin['phenotype'] = (ph_bin['phenotype'] == g).astype(int)
+                            n_g = int((ph_bin['phenotype'] == 1).sum())
+                            n_rest = int((ph_bin['phenotype'] == 0).sum())
+                            if n_g < args.pair_min_n or n_rest < args.pair_min_n:
+                                continue
+                            tmp = pair_dir / f"{species}__{var}__{g}_vs_rest.binary.tsv"
+                            ph_bin[['sample','phenotype']].to_csv(tmp, sep='\t', index=False)
+                            res = _assoc_permutation_test(str(tmp), 'binary', perms=args.perms)
+                            if pd.notna(res.get('pvalue')) and res.get('pvalue') <= 0.05:
+                                # Run pyseer if sufficiently large groups
+                                if n_g >= args.pair_pyseer_min_n and n_rest >= args.pair_pyseer_min_n:
+                                    import subprocess
+                                    out_fp = pair_dir / f"{species}__{var}__{g}_vs_rest.pyseer.tsv"
+                                    with open(out_fp, 'w') as fh:
+                                        cmd = ['pyseer','--phenotypes', str(tmp), '--kmers', uc_pyseer, '--uncompressed',
+                                               '--min-af', str(args.maf), '--cpu', str(t), '--no-distances']
+                                        subprocess.check_call(cmd, stdout=fh, stderr=subprocess.DEVNULL)
+                                    pairwise_outputs.append(out_fp)
+                        # Group-vs-group
+                        for g1, g2 in itertools.combinations(groups, 2):
+                            sub = ph[ph['phenotype'].isin([g1, g2])].copy()
+                            if sub.empty:
+                                continue
+                            sub['phenotype'] = (sub['phenotype'] == g1).astype(int)
+                            n1 = int((sub['phenotype'] == 1).sum())
+                            n2 = int((sub['phenotype'] == 0).sum())
+                            if n1 < args.pair_min_n or n2 < args.pair_min_n:
+                                continue
+                            tmp = pair_dir / f"{species}__{var}__{g1}_vs_{g2}.binary.tsv"
+                            sub[['sample','phenotype']].to_csv(tmp, sep='\t', index=False)
+                            res = _assoc_permutation_test(str(tmp), 'binary', perms=args.perms)
+                            if pd.notna(res.get('pvalue')) and res.get('pvalue') <= 0.05:
+                                if n1 >= args.pair_pyseer_min_n and n2 >= args.pair_pyseer_min_n:
+                                    import subprocess
+                                    out_fp = pair_dir / f"{species}__{var}__{g1}_vs_{g2}.pyseer.tsv"
+                                    with open(out_fp, 'w') as fh:
+                                        cmd = ['pyseer','--phenotypes', str(tmp), '--kmers', uc_pyseer, '--uncompressed',
+                                               '--min-af', str(args.maf), '--cpu', str(t), '--no-distances']
+                                        subprocess.check_call(cmd, stdout=fh, stderr=subprocess.DEVNULL)
+                                    pairwise_outputs.append(out_fp)
+                    # Combine per-species pairwise pyseer outputs
+                    if pairwise_outputs:
+                        parts = []
+                        for fp in pairwise_outputs:
+                            try:
+                                dfp = pd.read_csv(fp, sep='\t')
+                                dfp['__source__'] = fp.name
+                                parts.append(dfp)
+                            except Exception:
+                                pass
+                        if parts:
+                            combined = assoc_dir / f"{species}.pairwise.pyseer.tsv"
+                            pd.concat(parts, ignore_index=True).to_csv(combined, sep='\t', index=False)
+                            logger.info(f"Saved pairwise pyseer results: {combined}")
+            except Exception as e:
+                logger.error(f"Pairwise testing failed for {species}: {e}")
         
         # Log successful completion
         log_progress(species, 'completed', progress_file)
@@ -462,6 +550,8 @@ def main() -> None:
     ap.add_argument('--mash-s', type=int, default=10000, help='Mash sketch size')
     ap.add_argument('--kmer', type=int, default=31, help='unitig-caller k-mer size')
     ap.add_argument('--maf', type=float, default=0.05, help='pyseer min allele freq for unitigs')
+    ap.add_argument('--pair-min-n', type=int, default=20, help='minimum samples per group for pairwise tests')
+    ap.add_argument('--pair-pyseer-min-n', type=int, default=50, help='minimum samples per group to run pyseer in pairwise tests')
     ap.add_argument('--min-n', type=int, default=DEFAULT_MIN_SAMPLES, help='minimum usable samples per species')
     ap.add_argument('--max-missing-frac', type=float, default=DEFAULT_MAX_MISSING_FRAC, help='max fraction of missing values allowed for a phenotype')
     ap.add_argument('--min-level-n', type=int, default=DEFAULT_MIN_LEVEL_N, help='min samples required per category level')
