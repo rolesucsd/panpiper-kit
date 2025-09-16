@@ -154,15 +154,11 @@ def _permutation_test(pheno_tsv: str, typ: str, perms: int) -> Dict[str, object]
     if len(keep) < 4:
         return {"n_samples": len(keep), "test": "NA", "stat": np.nan, "pvalue": np.nan, "permutations": perms}
 
-    DM = _DM.loc[keep, keep].to_numpy(dtype=float, copy=True)  # C-contiguous copy
+    _DM = _DM.loc[keep, keep].to_numpy(dtype=float, copy=True)
+    _DM = 0.5 * (_DM + _DM.T)
+    np.fill_diagonal(_DM, 0.0)
 
-    # enforce symmetry & zero diagonal
-    DM = 0.5 * (DM + DM.T)
-    np.fill_diagonal(DM, 0.0)
-    if np.any(~np.isfinite(DM)) or np.any(DM < 0):
-        # clip tiny negatives, replace inf/nan with large-but-finite or zero
-        DM = np.nan_to_num(DM, nan=0.0, posinf=np.nanmax(np.where(np.isfinite(DM), DM, 0.0)) + 1.0, neginf=0.0)
-        DM[DM < 0] = 0.0
+    DM = DistanceMatrix(_DM, ids=keep)   # proper DistanceMatrix object
 
     if typ in ("binary", "categorical"):
         grp = ph.set_index('sample').loc[keep, 'phenotype'].astype(str).values
