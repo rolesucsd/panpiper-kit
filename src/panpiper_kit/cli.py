@@ -480,6 +480,8 @@ def main() -> None:
                     help='Force re-run all species (ignore existing files)')
     ap.add_argument('--missing-values', nargs='*', default=None,
                     help='Additional missing value indicators to treat as NaN (space-separated)')
+    ap.add_argument('--phenotype', default=None,
+                    help='Optional substring to select a single phenotype to test (case-insensitive). If omitted, test all.')
     args = ap.parse_args()
     
     # derive per-worker threads
@@ -563,6 +565,11 @@ def main() -> None:
         
         # Load all phenotype information (existing + newly generated)
         phenos = load_phenotype_manifest(phenos_dir)
+        # Optional filtering by phenotype substring
+        if args.phenotype:
+            pf = args.phenotype.lower()
+            for sp in list(phenos.keys()):
+                phenos[sp] = [(v, t, p) for (v, t, p) in phenos[sp] if pf in str(v).lower()]
         
     else:
         # Force mode or no resume - regenerate all phenotype files
@@ -573,7 +580,8 @@ def main() -> None:
             metadata_fp=args.metadata, ani_map_fp=args.ani_map, out_dir=str(phenos_dir),
             min_n=args.min_n, max_missing_frac=args.max_missing_frac,
             min_level_n=args.min_level_n, min_unique_cont=args.min_unique_cont,
-            custom_missing_values=args.missing_values
+            custom_missing_values=args.missing_values,
+            phenotype_filter=args.phenotype
         )
 
     # Build species -> sample list and determine which species to process

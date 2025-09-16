@@ -260,6 +260,7 @@ def _process_species_phenotypes(
     min_level_n: int,
     min_unique_cont: int,
     iqr_factor: float = 3.0,
+    phenotype_filter: Optional[str] = None,
 ) -> List[Tuple[str, str, str]]:
     """
     Process phenotypes for a single species and create phenotype files.
@@ -269,6 +270,10 @@ def _process_species_phenotypes(
     rows: List[Tuple[str, str, str]] = []
     exclude_cols = {'species', 'bin_identifier', 'patient', sample_col}
     usable_cols = [c for c in sub.columns if c not in exclude_cols]
+    # Optional substring filter on variable (column) name
+    if phenotype_filter:
+        pf = phenotype_filter.lower()
+        usable_cols = [c for c in usable_cols if pf in str(c).lower()]
 
     summary_records = []
 
@@ -399,6 +404,7 @@ def filter_metadata_per_species(
         min_unique_cont: int = DEFAULT_MIN_UNIQUE_CONT,
         custom_missing_values: Optional[List[str]] = None,
         iqr_factor: float = 3.0,       # Tukey fence multiplier
+        phenotype_filter: Optional[str] = None,
     ) -> Dict[str, List[Tuple[str, str, str]]]:
     """
     Filter metadata per species and create phenotype files for analysis.
@@ -435,6 +441,7 @@ def filter_metadata_per_species(
             min_level_n=min_level_n,
             min_unique_cont=min_unique_cont,
             iqr_factor=iqr_factor,
+            phenotype_filter=phenotype_filter,
         )
         out_index[species] = rows
 
