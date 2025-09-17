@@ -540,7 +540,7 @@ def main():
             "sample": sample,
             "n_unitigs": len(unitigs),
             "unitigs": ",".join(unitigs),
-            "fasta_path": str(fasta_dir / fasta_pattern.format(sample=sample)),
+            "fasta_path": str(Path(args.fasta_dir) / args.fasta_pattern.format(sample=sample)),
             "bakta_out_dir": str(bakta_out_dir / sample),
             "bakta_tsv_path": str(bakta_out_dir / sample / f"{sample}.tsv")
         })
