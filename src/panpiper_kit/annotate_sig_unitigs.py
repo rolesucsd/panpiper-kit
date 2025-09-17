@@ -222,7 +222,74 @@ def load_bakta_tsv(anno_path):
 
 
 # ---------------------------
-# Search / overlap
+# BLAST search
+# ---------------------------
+
+def run_blast_unitig(unitig, fasta_path, blast_bin="blastn", evalue=1e-5, max_target_seqs=1):
+    """
+    Run BLAST to find unitig in FASTA file.
+    Returns list of hits with: contig, start, stop, strand, pid, evalue
+    """
+    import tempfile
+    import subprocess
+    
+    # Create temporary query file
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.fasta', delete=False) as query_file:
+        query_file.write(f">unitig\n{unitig}\n")
+        query_path = query_file.name
+    
+    try:
+        # Run BLAST
+        cmd = [
+            blast_bin,
+            "-query", query_path,
+            "-subject", str(fasta_path),
+            "-outfmt", "6 qseqid sseqid pident length mismatch gapopen qstart qend sstart send evalue bitscore sstrand",
+            "-evalue", str(evalue),
+            "-max_target_seqs", str(max_target_seqs),
+            "-task", "blastn"
+        ]
+        
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        
+        hits = []
+        for line in result.stdout.strip().split('\n'):
+            if not line:
+                continue
+            parts = line.split('\t')
+            if len(parts) >= 12:
+                contig = parts[1]
+                pid = float(parts[2])
+                qstart, qend = int(parts[6]), int(parts[7])
+                sstart, send = int(parts[8]), int(parts[9])
+                evalue = float(parts[10])
+                sstrand = parts[11]
+                
+                # Convert to 1-based coordinates and ensure start <= end
+                start = min(sstart, send)
+                end = max(sstart, send)
+                strand = "+" if sstrand == "plus" else "-"
+                
+                hits.append({
+                    "contig": contig,
+                    "start": start,
+                    "end": end,
+                    "strand": strand,
+                    "pid": pid,
+                    "evalue": evalue
+                })
+        
+        return hits
+    
+    except subprocess.CalledProcessError as e:
+        print(f"[warning] BLAST failed for unitig: {e}")
+        return []
+    finally:
+        # Clean up temporary file
+        Path(query_path).unlink(missing_ok=True)
+
+# ---------------------------
+# Search / overlap (legacy - keeping for now)
 # ---------------------------
 
 def find_all_occurrences(hay, needle):
@@ -237,6 +304,18 @@ def find_all_occurrences(hay, needle):
         starts.append(j + 1)  # 1-based
         i = j + 1             # allow overlaps
     return starts
+
+def find_genes_by_coordinates(contig, start, end, cds_by_contig):
+    """
+    Find genes overlapping with the given coordinates on a contig.
+    Returns list of gene annotations, or empty list if intergenic.
+    """
+    overlapping_genes = []
+    for row in cds_by_contig.get(contig, []):
+        if max(start, row["start"]) <= min(end, row["stop"]):
+            overlapping_genes.append(row)
+    
+    return overlapping_genes
 
 def overlap_cds_on_contig(contig, qstart, qend, cds_by_contig):
     """Yield CDS dicts overlapping [qstart, qend] on contig."""
@@ -351,7 +430,7 @@ def process_sample(
     bakta_extra_args: str,
     allow_revcomp: bool,
 ):
-    """Ensure Bakta TSV, then scan FASTA & map to annotations. Returns list of long rows."""
+    """Use BLAST to find unitigs in Bakta FASTA, then map to annotations by coordinates."""
     fa_path = fasta_dir / fasta_pattern.format(sample=sample)
 
     # Preferred annotation path if user provided anno_dir/pattern
@@ -378,6 +457,18 @@ def process_sample(
     cds_by_contig = defaultdict(list)
     for r in cds_rows:
         cds_by_contig[r["contig"]].append(r)
+
+    # Find Bakta FASTA file (should be in the same directory as TSV)
+    bakta_fasta_path = tsv_path.parent / f"{sample}.fasta"
+    if not bakta_fasta_path.exists():
+        # Try alternative names
+        for alt_name in [f"{sample}.fna", f"{sample}.fa", "genome.fasta", "genome.fna"]:
+            alt_path = tsv_path.parent / alt_name
+            if alt_path.exists():
+                bakta_fasta_path = alt_path
+                break
+        else:
+            raise FileNotFoundError(f"Bakta FASTA file not found in {tsv_path.parent}")
 
     # Prepare RC map
     rc_map = {}
