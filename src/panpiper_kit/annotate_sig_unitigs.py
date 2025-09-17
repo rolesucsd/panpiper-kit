@@ -225,7 +225,7 @@ def load_bakta_tsv(anno_path):
 # BLAST search
 # ---------------------------
 
-def run_blast_unitig(unitig, fasta_path, blast_bin="blastn", evalue=1e-5, max_target_seqs=1):
+def run_blast_unitig(unitig, fasta_path, blast_bin="blastn", evalue=1e-3, max_target_seqs=1):
     """
     Run BLAST to find unitig in FASTA file.
     Returns list of hits with: contig, start, stop, strand, pid, evalue
@@ -239,7 +239,7 @@ def run_blast_unitig(unitig, fasta_path, blast_bin="blastn", evalue=1e-5, max_ta
         query_path = query_file.name
     
     try:
-        # Run BLAST
+        # Run BLAST with optimized parameters for speed
         cmd = [
             blast_bin,
             "-query", query_path,
@@ -247,7 +247,10 @@ def run_blast_unitig(unitig, fasta_path, blast_bin="blastn", evalue=1e-5, max_ta
             "-outfmt", "6 qseqid sseqid pident length mismatch gapopen qstart qend sstart send evalue bitscore sstrand",
             "-evalue", str(evalue),
             "-max_target_seqs", str(max_target_seqs),
-            "-task", "blastn"
+            "-task", "blastn-short" if len(unitig) < 50 else "blastn",
+            "-word_size", "7",  # Smaller word size for short sequences
+            "-reward", "2",     # Faster scoring
+            "-penalty", "-3"    # Faster scoring
         ]
         
         result = subprocess.run(cmd, capture_output=True, text=True, check=True)
@@ -466,6 +469,26 @@ def process_sample(
     # Process each unitig with BLAST
     rows = []
     for unitig in unitigs_for_sample:
+        # Skip very short or low-complexity unitigs
+        if len(unitig) < 20:
+            print(f"[info] Skipping short unitig {unitig} (length {len(unitig)})")
+            rows.append({
+                "unitig": unitig, "sample": sample, "contig": "", "pid": 0.0,
+                "start": 0, "end": 0, "coding": "too_short", "locus_tag": "",
+                "gene": "", "product": "", "dbxrefs": ""
+            })
+            continue
+        
+        # Skip low-complexity unitigs (e.g., all same nucleotide)
+        if len(set(unitig)) < 3:
+            print(f"[info] Skipping low-complexity unitig {unitig}")
+            rows.append({
+                "unitig": unitig, "sample": sample, "contig": "", "pid": 0.0,
+                "start": 0, "end": 0, "coding": "low_complexity", "locus_tag": "",
+                "gene": "", "product": "", "dbxrefs": ""
+            })
+            continue
+        
         print(f"[info] BLASTing unitig {unitig} in sample {sample}")
         
         # Run BLAST
@@ -561,6 +584,7 @@ def main():
     ap.add_argument("--anno-pattern", default="{sample}/{sample}.tsv",
                     help="Annotation TSV pattern within --anno-dir (default '{sample}/{sample}.tsv').")
     ap.add_argument("--q-thresh", type=float, default=0.01, help="FDR threshold for either column (default 0.01).")
+    ap.add_argument("--max-unitigs", type=int, default=10000, help="Maximum number of unitigs to process (default 10000).")
     ap.add_argument("--allow-revcomp", action="store_true", help="Search reverse-complement of unitigs too.")
     ap.add_argument("--out-prefix", required=True, help="Output prefix for TSVs.")
 
@@ -603,6 +627,13 @@ def main():
 
     ps_sig = ps[(ps["q_filter"] < args.q_thresh) | (ps["q_lrt"] < args.q_thresh)].copy()
     ps_sig["variant"] = ps_sig["variant"].astype(str).str.strip()
+
+    # Limit to top N most significant unitigs for speed
+    if len(ps_sig) > args.max_unitigs:
+        # Sort by best p-value (minimum of q_filter and q_lrt)
+        ps_sig["best_pvalue"] = ps_sig[["q_filter", "q_lrt"]].min(axis=1)
+        ps_sig = ps_sig.nsmallest(args.max_unitigs, "best_pvalue")
+        print(f"[info] Limited to top {args.max_unitigs:,} most significant unitigs (from {len(ps):,} total)")
 
     if ps_sig.empty:
         write_tsv(pd.DataFrame(columns=[
