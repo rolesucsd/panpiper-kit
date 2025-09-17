@@ -170,32 +170,24 @@ def load_bakta_tsv(anno_path):
     cds = []
     with open_maybe_gz(anno_path) as fh:
         header = None
-        line_num = 0
         for ln in fh:
-            line_num += 1
             if not ln.strip():
-                print(f"[debug] Skipping empty line {line_num}")
                 continue
             # Skip comment lines (starting with #) UNLESS they contain tab-separated values (header row)
             if ln.startswith("#"):
                 # Check if this looks like a header row (contains tabs)
                 if "\t" in ln:
-                    print(f"[debug] Found header row on line {line_num}: {ln.strip()[:50]}...")
                     # Remove the leading # and process as header
                     parts = ln[1:].rstrip("\n").split("\t")
                 else:
-                    print(f"[debug] Skipping comment line {line_num}: {ln.strip()[:50]}...")
                     continue
             else:
                 parts = ln.rstrip("\n").split("\t")
             
-            print(f"[debug] Processing line {line_num} with {len(parts)} parts: {parts[:3]}...")
             if header is None:
                 # This should be the actual header row (first non-comment line)
                 header = [norm(x) for x in parts]
                 col = {c: i for i, c in enumerate(header)}
-                print(f"[debug] Bakta TSV header columns: {header}")
-                print(f"[debug] Available columns: {list(col.keys())}")
                 for req in ("sequence_id", "type", "start", "stop", "strand"):
                     if req not in col:
                         raise ValueError(f"Bakta TSV missing column: {req}. Available columns: {list(col.keys())}")
