@@ -19,7 +19,7 @@ Features
 Outputs
 -------
 <out_prefix>_long.tsv:
-  unitig  sample  contig  start  end  strand  hit_type  locus_tag  gene  product  dbxrefs
+  unitig  sample  contig  pid  start  end  coding  locus_tag  gene  product  dbxrefs
 <out_prefix>_summary.tsv:
   unitig  n_samples  samples  annotations
 
@@ -470,78 +470,92 @@ def process_sample(
         else:
             raise FileNotFoundError(f"Bakta FASTA file not found in {tsv_path.parent}")
 
-    # Prepare RC map
-    rc_map = {}
-    if allow_revcomp:
-        for u in unitigs_for_sample:
-            rc_map[u] = reverse_complement(u)
-
-    # Scan FASTA
+    # Process each unitig with BLAST
     rows = []
-    u_set = set(unitigs_for_sample)
-    for contig, seq in stream_fasta(fa_path):
-        if not u_set:
-            break
-        for u in list(u_set):
-            # forward
-            starts = find_all_occurrences(seq, u)
-            for s1 in starts:
-                e1 = s1 + len(u) - 1
-                cds_hits = list(overlap_cds_on_contig(contig, s1, e1, cds_by_contig))
-                if cds_hits:
-                    for c in cds_hits:
-                        rows.append({
-                            "unitig": u, "sample": sample, "contig": contig,
-                            "start": s1, "end": e1, "strand": "+", "hit_type": "exact",
-                            "locus_tag": c["locus_tag"], "gene": c["gene"],
-                            "product": c["product"], "dbxrefs": c["dbxrefs"],
-                        })
-                else:
-                    rows.append({
-                        "unitig": u, "sample": sample, "contig": contig,
-                        "start": s1, "end": e1, "strand": "+", "hit_type": "exact",
-                        "locus_tag": "", "gene": "", "product": "", "dbxrefs": "",
-                    })
-
-            # reverse
-            if allow_revcomp:
-                rc = rc_map[u]
-                rstarts = find_all_occurrences(seq, rc)
-                for s1 in rstarts:
-                    e1 = s1 + len(u) - 1
-                    cds_hits = list(overlap_cds_on_contig(contig, s1, e1, cds_by_contig))
-                    if cds_hits:
-                        for c in cds_hits:
-                            rows.append({
-                                "unitig": u, "sample": sample, "contig": contig,
-                                "start": s1, "end": e1, "strand": "-", "hit_type": "revcomp",
-                                "locus_tag": c["locus_tag"], "gene": c["gene"],
-                                "product": c["product"], "dbxrefs": c["dbxrefs"],
-                            })
-                    else:
-                        rows.append({
-                            "unitig": u, "sample": sample, "contig": contig,
-                            "start": s1, "end": e1, "strand": "-", "hit_type": "revcomp",
-                            "locus_tag": "", "gene": "", "product": "", "dbxrefs": "",
-                        })
-
-    # Also record unitigs not found at all (diagnostic)
-    found = {(r["unitig"], r["sample"]) for r in rows}
-    for u in unitigs_for_sample:
-        if (u, sample) not in found:
+    for unitig in unitigs_for_sample:
+        print(f"[info] BLASTing unitig {unitig} in sample {sample}")
+        
+        # Run BLAST
+        blast_hits = run_blast_unitig(unitig, bakta_fasta_path)
+        
+        if not blast_hits:
+            # No BLAST hits found
             rows.append({
-                "unitig": u, "sample": sample, "contig": "", "start": "",
-                "end": "", "strand": "", "hit_type": "not_found",
-                "locus_tag": "", "gene": "", "product": "", "dbxrefs": "",
+                "unitig": unitig, "sample": sample, "contig": "", "pid": 0.0,
+                "start": 0, "end": 0, "coding": "no_hit", "locus_tag": "",
+                "gene": "", "product": "", "dbxrefs": ""
             })
+            continue
+        
+        # Take the top hit
+        top_hit = blast_hits[0]
+        contig = top_hit["contig"]
+        start = top_hit["start"]
+        end = top_hit["end"]
+        strand = top_hit["strand"]
+        pid = top_hit["pid"]
+        
+        # Find overlapping genes
+        overlapping_genes = find_genes_by_coordinates(contig, start, end, cds_by_contig)
+        
+        if overlapping_genes:
+            # Genic - single locus tag
+            if len(overlapping_genes) == 1:
+                gene = overlapping_genes[0]
+                rows.append({
+                    "unitig": unitig, "sample": sample, "contig": contig, "pid": pid,
+                    "start": start, "end": end, "coding": "genic", 
+                    "locus_tag": gene["locus_tag"], "gene": gene["gene"],
+                    "product": gene["product"], "dbxrefs": gene["dbxrefs"]
+                })
+            else:
+                # Multiple genes - combine with |
+                locus_tags = "|".join([g["locus_tag"] for g in overlapping_genes if g["locus_tag"]])
+                genes = "|".join([g["gene"] for g in overlapping_genes if g["gene"]])
+                products = "|".join([g["product"] for g in overlapping_genes if g["product"]])
+                dbxrefs = "|".join([g["dbxrefs"] for g in overlapping_genes if g["dbxrefs"]])
+                
+                rows.append({
+                    "unitig": unitig, "sample": sample, "contig": contig, "pid": pid,
+                    "start": start, "end": end, "coding": "genic",
+                    "locus_tag": locus_tags, "gene": genes,
+                    "product": products, "dbxrefs": dbxrefs
+                })
+        else:
+            # Intergenic - find flanking genes
+            flanking_genes = []
+            for gene in cds_by_contig.get(contig, []):
+                # Check if gene is before or after the unitig
+                if gene["stop"] < start:  # Gene is before
+                    flanking_genes.append(gene)
+                elif gene["start"] > end:  # Gene is after
+                    flanking_genes.append(gene)
+            
+            # Sort by distance and take closest two
+            flanking_genes.sort(key=lambda g: min(abs(g["stop"] - start), abs(g["start"] - end)))
+            flanking_genes = flanking_genes[:2]
+            
+            if flanking_genes:
+                locus_tags = "|".join([g["locus_tag"] for g in flanking_genes if g["locus_tag"]])
+                genes = "|".join([g["gene"] for g in flanking_genes if g["gene"]])
+                products = "|".join([g["product"] for g in flanking_genes if g["product"]])
+                dbxrefs = "|".join([g["dbxrefs"] for g in flanking_genes if g["dbxrefs"]])
+                
+                rows.append({
+                    "unitig": unitig, "sample": sample, "contig": contig, "pid": pid,
+                    "start": start, "end": end, "coding": "intergenic",
+                    "locus_tag": locus_tags, "gene": genes,
+                    "product": products, "dbxrefs": dbxrefs
+                })
+            else:
+                # No flanking genes found
+                rows.append({
+                    "unitig": unitig, "sample": sample, "contig": contig, "pid": pid,
+                    "start": start, "end": end, "coding": "intergenic",
+                    "locus_tag": "", "gene": "", "product": "", "dbxrefs": ""
+                })
 
     return rows
-
-
-# ---------------------------
-# Main
-# ---------------------------
-
 def main():
     ap = argparse.ArgumentParser(
         description="FDR-filter ONE Pyseer TSV, map significant unitigs to FASTA coords & Bakta annotations (auto-run Bakta if missing)."
@@ -599,7 +613,7 @@ def main():
 
     if ps_sig.empty:
         write_tsv(pd.DataFrame(columns=[
-            "unitig","sample","contig","start","end","strand","hit_type","locus_tag","gene","product","dbxrefs"
+            "unitig","sample","contig","pid","start","end","coding","locus_tag","gene","product","dbxrefs"
         ]), f"{args.out_prefix}_long.tsv")
         write_tsv(pd.DataFrame(columns=["unitig","n_samples","samples","annotations"]),
                   f"{args.out_prefix}_summary.tsv")
@@ -682,7 +696,7 @@ def main():
         df_long = pd.DataFrame(long_rows_all)
     else:
         df_long = pd.DataFrame(columns=[
-            "unitig","sample","contig","start","end","strand","hit_type","locus_tag","gene","product","dbxrefs"
+            "unitig","sample","contig","pid","start","end","coding","locus_tag","gene","product","dbxrefs"
         ])
     write_tsv(df_long, f"{args.out_prefix}_long.tsv")
 
