@@ -459,16 +459,9 @@ def process_sample(
         cds_by_contig[r["contig"]].append(r)
 
     # Find Bakta FASTA file (should be in the same directory as TSV)
-    bakta_fasta_path = tsv_path.parent / f"{sample}.fasta"
+    bakta_fasta_path = tsv_path.parent / f"{sample}.fna"
     if not bakta_fasta_path.exists():
-        # Try alternative names
-        for alt_name in [f"{sample}.fna", f"{sample}.fa", "genome.fasta", "genome.fna"]:
-            alt_path = tsv_path.parent / alt_name
-            if alt_path.exists():
-                bakta_fasta_path = alt_path
-                break
-        else:
-            raise FileNotFoundError(f"Bakta FASTA file not found in {tsv_path.parent}")
+        raise FileNotFoundError(f"Bakta FASTA file not found: {bakta_fasta_path}")
 
     # Process each unitig with BLAST
     rows = []
