@@ -160,7 +160,7 @@ def load_bakta_tsv(anno_path):
     """
     Return CDS rows as dicts:
       contig,start,stop,strand,locus_tag,gene,product,dbxrefs
-    Skips lines beginning with '#'.
+    Handles Bakta TSV with comment headers and finds the actual column header row.
     """
     if not Path(anno_path).exists():
         return []
@@ -171,10 +171,14 @@ def load_bakta_tsv(anno_path):
     with open_maybe_gz(anno_path) as fh:
         header = None
         for ln in fh:
-            if not ln.strip() or ln.startswith("#"):
+            if not ln.strip():
+                continue
+            # Skip comment lines (starting with #)
+            if ln.startswith("#"):
                 continue
             parts = ln.rstrip("\n").split("\t")
             if header is None:
+                # This should be the actual header row (first non-comment line)
                 header = [norm(x) for x in parts]
                 col = {c: i for i, c in enumerate(header)}
                 for req in ("sequence_id", "type", "start", "stop", "strand"):
@@ -273,10 +277,12 @@ def ensure_bakta_for_sample(
     # If out_dir exists and contains prefix.tsv (or any .tsv), skip running.
     if out_dir.exists():
         if target_tsv.exists():
+            print(f"[info] Using existing Bakta TSV for sample '{sample}': {target_tsv}")
             return target_tsv
         # else: try any .tsv in the dir
         ts = sorted(out_dir.glob("*.tsv"))
         if ts:
+            print(f"[info] Using existing Bakta TSV for sample '{sample}': {ts[0]}")
             return ts[0]
 
     # 4) Run bakta
@@ -300,8 +306,10 @@ def ensure_bakta_for_sample(
         cmd.extend(shlex.split(bakta_extra_args))
 
     # Run
+    print(f"[info] Running Bakta for sample '{sample}'...")
     try:
         subprocess.run(cmd, check=True)
+        print(f"[info] Bakta completed for sample '{sample}'")
     except subprocess.CalledProcessError as e:
         raise RuntimeError(f"Bakta failed for sample '{sample}': {e}")
 
@@ -523,6 +531,25 @@ def main():
         chosen = sorted(candidates, key=lambda s: (-sample_total_counts.get(s, 0), s))[0]
         assigned_by_sample[chosen].add(u)
     per_sample_unitigs = {s: sorted(list(us)) for s, us in assigned_by_sample.items()}
+
+    # Write sample/unitig mapping file
+    mapping_rows = []
+    for sample in sorted(per_sample_unitigs.keys()):
+        unitigs = per_sample_unitigs[sample]
+        mapping_rows.append({
+            "sample": sample,
+            "n_unitigs": len(unitigs),
+            "unitigs": ",".join(unitigs),
+            "fasta_path": str(fasta_dir / fasta_pattern.format(sample=sample)),
+            "bakta_out_dir": str(bakta_out_dir / sample),
+            "bakta_tsv_path": str(bakta_out_dir / sample / f"{sample}.tsv")
+        })
+    
+    mapping_df = pd.DataFrame(mapping_rows)
+    mapping_file = f"{args.out_prefix}_sample_unitig_mapping.tsv"
+    write_tsv(mapping_df, mapping_file)
+    print(f"[info] Sample/unitig mapping written to: {mapping_file}")
+    print(f"[info] {len(per_sample_unitigs)} samples will be processed with {sum(len(us) for us in per_sample_unitigs.values())} total unitigs")
 
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
