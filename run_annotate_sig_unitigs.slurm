@@ -23,7 +23,7 @@ ANNO_PATTERN="{sample}/{sample}.tsv" # Pattern for annotation files
 BAKTA_RUN=true                      # Set to false if you have pre-computed Bakta annotations
 BAKTA_DB="/path/to/bakta/db"        # Path to Bakta database
 BAKTA_OUT_DIR="output/bakta"        # Where to put Bakta outputs
-BAKTA_PREFIX_PATTERN="{sample}"     # Bakta prefix pattern
+# Bakta prefix is automatically set to sample name
 BAKTA_CORES=8                       # Threads per Bakta run
 
 # Output

@@ -30,7 +30,7 @@ Assumptions
 - If no CDS overlap exists, annotation fields are left blank (intergenic).
 - Bakta output detection:
   1) If --anno-dir/--anno-pattern resolves to a file, use it.
-  2) Else if --bakta-run: run Bakta into --bakta-out-dir/{sample}/ with prefix = --bakta-prefix-pattern (default {sample}),
+  2) Else if --bakta-run: run Bakta into --bakta-out-dir/{sample}/ with prefix = {sample},
      then pick {outdir}/{prefix}.tsv if present, otherwise the first *.tsv within {outdir}.
   3) Else: error.
 
@@ -246,7 +246,6 @@ def ensure_bakta_for_sample(
     bakta_bin: str,
     bakta_db: Path,
     bakta_out_dir: Path,
-    bakta_prefix_pattern: str,
     bakta_cores: int,
     bakta_extra_args: str,
 ) -> Path:
@@ -268,7 +267,7 @@ def ensure_bakta_for_sample(
 
     # 3) Prepare Bakta output directory and prefix
     out_dir  = bakta_out_dir / sample
-    prefix   = bakta_prefix_pattern.format(sample=sample)
+    prefix   = sample  # Use sample name directly as prefix
     target_tsv = out_dir / f"{prefix}.tsv"
 
     # If out_dir exists and contains prefix.tsv (or any .tsv), skip running.
@@ -333,7 +332,6 @@ def process_sample(
     bakta_bin: str,
     bakta_db: Path | None,
     bakta_out_dir: Path,
-    bakta_prefix_pattern: str,
     bakta_cores: int,
     bakta_extra_args: str,
     allow_revcomp: bool,
@@ -356,7 +354,6 @@ def process_sample(
         bakta_bin=bakta_bin,
         bakta_db=bakta_db_req if bakta_db_req else Path("__NO_DB__"),
         bakta_out_dir=bakta_out_dir,
-        bakta_prefix_pattern=bakta_prefix_pattern,
         bakta_cores=bakta_cores,
         bakta_extra_args=bakta_extra_args,
     )
@@ -548,7 +545,6 @@ def main():
                 bakta_bin=args.bakta_bin,
                 bakta_db=bakta_db_path,
                 bakta_out_dir=bakta_out_dir,
-                bakta_prefix_pattern=args.bakta_prefix_pattern,
                 bakta_cores=args.bakta_cores,
                 bakta_extra_args=args.bakta_extra_args,
                 allow_revcomp=args.allow_revcomp,
