@@ -333,7 +333,6 @@ def process_sample(
     bakta_bin: str,
     bakta_db: Path | None,
     bakta_out_dir: Path,
-    bakta_prefix_pattern: str,
     bakta_cores: int,
     bakta_extra_args: str,
     allow_revcomp: bool,
@@ -356,7 +355,7 @@ def process_sample(
         bakta_bin=bakta_bin,
         bakta_db=bakta_db_req if bakta_db_req else Path("__NO_DB__"),
         bakta_out_dir=bakta_out_dir,
-        bakta_prefix_pattern=bakta_prefix_pattern,
+        bakta_prefix_pattern=sample,
         bakta_cores=bakta_cores,
         bakta_extra_args=bakta_extra_args,
     )
@@ -461,8 +460,6 @@ def main():
     ap.add_argument("--bakta-db", default=None, help="Path to Bakta database (required if --bakta-run).")
     ap.add_argument("--bakta-out-dir", default=None,
                     help="Root directory for Bakta outputs (default: --anno-dir if set, else --fasta-dir).")
-    ap.add_argument("--bakta-prefix-pattern", default="{sample}",
-                    help="Bakta --prefix value (default '{sample}').")
     ap.add_argument("--bakta-cores", type=int, default=8, help="Threads per Bakta run (default 8).")
     ap.add_argument("--bakta-extra-args", default="", help="Extra args string passed to Bakta (optional).")
 
@@ -550,7 +547,7 @@ def main():
                 bakta_bin=args.bakta_bin,
                 bakta_db=bakta_db_path,
                 bakta_out_dir=bakta_out_dir,
-                bakta_prefix_pattern=args.bakta_prefix_pattern,
+                bakta_prefix_pattern=sample,
                 bakta_cores=args.bakta_cores,
                 bakta_extra_args=args.bakta_extra_args,
                 allow_revcomp=args.allow_revcomp,
