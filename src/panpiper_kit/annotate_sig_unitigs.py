@@ -176,11 +176,19 @@ def load_bakta_tsv(anno_path):
             if not ln.strip():
                 print(f"[debug] Skipping empty line {line_num}")
                 continue
-            # Skip comment lines (starting with #)
+            # Skip comment lines (starting with #) UNLESS they contain tab-separated values (header row)
             if ln.startswith("#"):
-                print(f"[debug] Skipping comment line {line_num}: {ln.strip()[:50]}...")
-                continue
-            parts = ln.rstrip("\n").split("\t")
+                # Check if this looks like a header row (contains tabs)
+                if "\t" in ln:
+                    print(f"[debug] Found header row on line {line_num}: {ln.strip()[:50]}...")
+                    # Remove the leading # and process as header
+                    parts = ln[1:].rstrip("\n").split("\t")
+                else:
+                    print(f"[debug] Skipping comment line {line_num}: {ln.strip()[:50]}...")
+                    continue
+            else:
+                parts = ln.rstrip("\n").split("\t")
+            
             print(f"[debug] Processing line {line_num} with {len(parts)} parts: {parts[:3]}...")
             if header is None:
                 # This should be the actual header row (first non-comment line)
