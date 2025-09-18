@@ -19,7 +19,7 @@ Features
 Outputs
 -------
 <out_prefix>_long.tsv:
-  unitig  sample  contig  pid  start  end  coding  locus_tag  gene  product  dbxrefs
+  unitig  sample  contig  pid  start  end  strand  evalue  bitscore  length  coding  locus_tag  gene  product  dbxrefs
 <out_prefix>_summary.tsv:
   unitig  n_samples  samples  annotations
 
@@ -228,7 +228,7 @@ def load_bakta_tsv(anno_path):
 def run_blast_unitig(unitig, fasta_path, blast_bin="blastn", evalue=1e-3, max_target_seqs=1):
     """
     Run BLAST to find unitig in FASTA file.
-    Returns list of hits with: contig, start, stop, strand, pid, evalue
+    Returns list of hits with: contig, start, stop, strand, pid, evalue, bitscore, length
     """
     import tempfile
     import subprocess
@@ -263,10 +263,12 @@ def run_blast_unitig(unitig, fasta_path, blast_bin="blastn", evalue=1e-3, max_ta
             if len(parts) >= 12:
                 contig = parts[1]
                 pid = float(parts[2])
+                length = int(parts[3])
                 qstart, qend = int(parts[6]), int(parts[7])
                 sstart, send = int(parts[8]), int(parts[9])
                 evalue = float(parts[10])
-                sstrand = parts[11]
+                bitscore = float(parts[11])
+                sstrand = parts[12]
                 
                 # Convert to 1-based coordinates and ensure start <= end
                 start = min(sstart, send)
@@ -279,7 +281,9 @@ def run_blast_unitig(unitig, fasta_path, blast_bin="blastn", evalue=1e-3, max_ta
                     "end": end,
                     "strand": strand,
                     "pid": pid,
-                    "evalue": evalue
+                    "evalue": evalue,
+                    "bitscore": bitscore,
+                    "length": length
                 })
         
         return hits
@@ -469,26 +473,6 @@ def process_sample(
     # Process each unitig with BLAST
     rows = []
     for unitig in unitigs_for_sample:
-        # Skip very short or low-complexity unitigs
-        if len(unitig) < 20:
-            print(f"[info] Skipping short unitig {unitig} (length {len(unitig)})")
-            rows.append({
-                "unitig": unitig, "sample": sample, "contig": "", "pid": 0.0,
-                "start": 0, "end": 0, "coding": "too_short", "locus_tag": "",
-                "gene": "", "product": "", "dbxrefs": ""
-            })
-            continue
-        
-        # Skip low-complexity unitigs (e.g., all same nucleotide)
-        if len(set(unitig)) < 3:
-            print(f"[info] Skipping low-complexity unitig {unitig}")
-            rows.append({
-                "unitig": unitig, "sample": sample, "contig": "", "pid": 0.0,
-                "start": 0, "end": 0, "coding": "low_complexity", "locus_tag": "",
-                "gene": "", "product": "", "dbxrefs": ""
-            })
-            continue
-        
         print(f"[info] BLASTing unitig {unitig} in sample {sample}")
         
         # Run BLAST
@@ -498,8 +482,8 @@ def process_sample(
             # No BLAST hits found
             rows.append({
                 "unitig": unitig, "sample": sample, "contig": "", "pid": 0.0,
-                "start": 0, "end": 0, "coding": "no_hit", "locus_tag": "",
-                "gene": "", "product": "", "dbxrefs": ""
+                "start": 0, "end": 0, "strand": "", "evalue": 1.0, "bitscore": 0.0, "length": 0,
+                "coding": "no_hit", "locus_tag": "", "gene": "", "product": "", "dbxrefs": ""
             })
             continue
         
@@ -510,6 +494,9 @@ def process_sample(
         end = top_hit["end"]
         strand = top_hit["strand"]
         pid = top_hit["pid"]
+        evalue = top_hit["evalue"]
+        bitscore = top_hit["bitscore"]
+        length = top_hit["length"]
         
         # Find overlapping genes
         overlapping_genes = find_genes_by_coordinates(contig, start, end, cds_by_contig)
@@ -520,8 +507,8 @@ def process_sample(
                 gene = overlapping_genes[0]
                 rows.append({
                     "unitig": unitig, "sample": sample, "contig": contig, "pid": pid,
-                    "start": start, "end": end, "coding": "genic", 
-                    "locus_tag": gene["locus_tag"], "gene": gene["gene"],
+                    "start": start, "end": end, "strand": strand, "evalue": evalue, "bitscore": bitscore, "length": length,
+                    "coding": "genic", "locus_tag": gene["locus_tag"], "gene": gene["gene"],
                     "product": gene["product"], "dbxrefs": gene["dbxrefs"]
                 })
             else:
@@ -533,8 +520,8 @@ def process_sample(
                 
                 rows.append({
                     "unitig": unitig, "sample": sample, "contig": contig, "pid": pid,
-                    "start": start, "end": end, "coding": "genic",
-                    "locus_tag": locus_tags, "gene": genes,
+                    "start": start, "end": end, "strand": strand, "evalue": evalue, "bitscore": bitscore, "length": length,
+                    "coding": "genic", "locus_tag": locus_tags, "gene": genes,
                     "product": products, "dbxrefs": dbxrefs
                 })
         else:
@@ -559,16 +546,16 @@ def process_sample(
                 
                 rows.append({
                     "unitig": unitig, "sample": sample, "contig": contig, "pid": pid,
-                    "start": start, "end": end, "coding": "intergenic",
-                    "locus_tag": locus_tags, "gene": genes,
+                    "start": start, "end": end, "strand": strand, "evalue": evalue, "bitscore": bitscore, "length": length,
+                    "coding": "intergenic", "locus_tag": locus_tags, "gene": genes,
                     "product": products, "dbxrefs": dbxrefs
                 })
             else:
                 # No flanking genes found
                 rows.append({
                     "unitig": unitig, "sample": sample, "contig": contig, "pid": pid,
-                    "start": start, "end": end, "coding": "intergenic",
-                    "locus_tag": "", "gene": "", "product": "", "dbxrefs": ""
+                    "start": start, "end": end, "strand": strand, "evalue": evalue, "bitscore": bitscore, "length": length,
+                    "coding": "intergenic", "locus_tag": "", "gene": "", "product": "", "dbxrefs": ""
                 })
 
     return rows
@@ -622,22 +609,19 @@ def main():
         if col not in ps.columns:
             raise SystemExit(f"Missing column in Pyseer: {col}")
 
-    ps["q_filter"] = bh_fdr(ps["filter-pvalue"].tolist())
-    ps["q_lrt"]    = bh_fdr(ps["lrt-pvalue"].tolist())
+    # Convert p-values to float and get top N by p-value (no BH correction)
+    ps["filter-pvalue"] = pd.to_numeric(ps["filter-pvalue"], errors='coerce')
+    ps["lrt-pvalue"] = pd.to_numeric(ps["lrt-pvalue"], errors='coerce')
+    ps["variant"] = ps["variant"].astype(str).str.strip()
 
-    ps_sig = ps[(ps["q_filter"] < args.q_thresh) | (ps["q_lrt"] < args.q_thresh)].copy()
-    ps_sig["variant"] = ps_sig["variant"].astype(str).str.strip()
-
-    # Limit to top N most significant unitigs for speed
-    if len(ps_sig) > args.max_unitigs:
-        # Sort by best p-value (minimum of q_filter and q_lrt)
-        ps_sig["best_pvalue"] = ps_sig[["q_filter", "q_lrt"]].min(axis=1)
-        ps_sig = ps_sig.nsmallest(args.max_unitigs, "best_pvalue")
-        print(f"[info] Limited to top {args.max_unitigs:,} most significant unitigs (from {len(ps):,} total)")
+    # Get top N unitigs by best p-value (minimum of filter and lrt p-values)
+    ps["best_pvalue"] = ps[["filter-pvalue", "lrt-pvalue"]].min(axis=1)
+    ps_sig = ps.nsmallest(args.max_unitigs, "best_pvalue").copy()
+    print(f"[info] Selected top {len(ps_sig):,} unitigs by p-value (from {len(ps):,} total)")
 
     if ps_sig.empty:
         write_tsv(pd.DataFrame(columns=[
-            "unitig","sample","contig","pid","start","end","coding","locus_tag","gene","product","dbxrefs"
+            "unitig","sample","contig","pid","start","end","strand","evalue","bitscore","length","coding","locus_tag","gene","product","dbxrefs"
         ]), f"{args.out_prefix}_long.tsv")
         write_tsv(pd.DataFrame(columns=["unitig","n_samples","samples","annotations"]),
                   f"{args.out_prefix}_summary.tsv")
@@ -668,24 +652,30 @@ def main():
         assigned_by_sample[chosen].add(u)
     per_sample_unitigs = {s: sorted(list(us)) for s, us in assigned_by_sample.items()}
 
-    # Write sample/unitig mapping file
-    mapping_rows = []
-    for sample in sorted(per_sample_unitigs.keys()):
-        unitigs = per_sample_unitigs[sample]
-        mapping_rows.append({
-            "sample": sample,
-            "n_unitigs": len(unitigs),
-            "unitigs": ",".join(unitigs),
-            "fasta_path": str(Path(args.fasta_dir) / args.fasta_pattern.format(sample=sample)),
-            "bakta_out_dir": str(bakta_out_dir / sample),
-            "bakta_tsv_path": str(bakta_out_dir / sample / f"{sample}.tsv")
-        })
-    
-    mapping_df = pd.DataFrame(mapping_rows)
+    # Write sample/unitig mapping file (skip if already exists)
     mapping_file = f"{args.out_prefix}_sample_unitig_mapping.tsv"
-    write_tsv(mapping_df, mapping_file)
-    print(f"[info] Sample/unitig mapping written to: {mapping_file}")
-    print(f"[info] {len(per_sample_unitigs)} samples will be processed with {sum(len(us) for us in per_sample_unitigs.values())} total unitigs")
+    if Path(mapping_file).exists():
+        print(f"[info] Sample/unitig mapping file already exists: {mapping_file}")
+        # Load existing mapping to get sample counts
+        existing_df = pd.read_csv(mapping_file, sep="\t")
+        print(f"[info] {len(existing_df)} samples will be processed with {existing_df['n_unitigs'].sum():,} total unitigs")
+    else:
+        mapping_rows = []
+        for sample in sorted(per_sample_unitigs.keys()):
+            unitigs = per_sample_unitigs[sample]
+            mapping_rows.append({
+                "sample": sample,
+                "n_unitigs": len(unitigs),
+                "unitigs": ",".join(unitigs),
+                "fasta_path": str(Path(args.fasta_dir) / args.fasta_pattern.format(sample=sample)),
+                "bakta_out_dir": str(bakta_out_dir / sample),
+                "bakta_tsv_path": str(bakta_out_dir / sample / f"{sample}.tsv")
+            })
+        
+        mapping_df = pd.DataFrame(mapping_rows)
+        write_tsv(mapping_df, mapping_file)
+        print(f"[info] Sample/unitig mapping written to: {mapping_file}")
+        print(f"[info] {len(per_sample_unitigs)} samples will be processed with {sum(len(us) for us in per_sample_unitigs.values())} total unitigs")
 
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -720,9 +710,28 @@ def main():
         df_long = pd.DataFrame(long_rows_all)
     else:
         df_long = pd.DataFrame(columns=[
-            "unitig","sample","contig","pid","start","end","coding","locus_tag","gene","product","dbxrefs"
+            "unitig","sample","contig","pid","start","end","strand","evalue","bitscore","length","coding","locus_tag","gene","product","dbxrefs"
         ])
     write_tsv(df_long, f"{args.out_prefix}_long.tsv")
+
+    # Print summary statistics
+    if not df_long.empty:
+        total_unitigs = len(df_long)
+        no_hit = len(df_long[df_long["coding"] == "no_hit"])
+        genic = len(df_long[df_long["coding"] == "genic"])
+        intergenic = len(df_long[df_long["coding"] == "intergenic"])
+        
+        print(f"\n[summary] Results:")
+        print(f"  Total unitigs processed: {total_unitigs:,}")
+        print(f"  No BLAST hits: {no_hit:,} ({no_hit/total_unitigs*100:.1f}%)")
+        print(f"  Genic hits: {genic:,} ({genic/total_unitigs*100:.1f}%)")
+        print(f"  Intergenic hits: {intergenic:,} ({intergenic/total_unitigs*100:.1f}%)")
+        
+        if no_hit > 0:
+            print(f"\n[info] High 'no_hit' rate may indicate:")
+            print(f"  - Unitigs not present in Bakta FASTA files")
+            print(f"  - BLAST parameters too strict (evalue={1e-3})")
+            print(f"  - Unitigs from different reference than Bakta input")
 
     # Summary per unitig
     ann_by_unitig = defaultdict(set)
