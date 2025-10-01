@@ -330,6 +330,18 @@ def _process_species_phenotypes(
 
         # Type-specific stats/filters
         if typ in ("binary", "categorical"):
+            # Normalize binary values to 0/1 and drop ambiguous values
+            if typ == "binary":
+                val_str = s_nonnull[col].astype(str).str.strip().str.lower()
+                true_like = {"true", "t", "yes", "y", "1"}
+                false_like = {"false", "f", "no", "n", "0"}
+                mapped = pd.Series(pd.NA, index=val_str.index)
+                mapped[val_str.isin(true_like)] = 1
+                mapped[val_str.isin(false_like)] = 0
+                # Replace original values with mapped 0/1 and drop NAs (ambiguous)
+                s_nonnull[col] = mapped
+                s_nonnull = s_nonnull.dropna(subset=[col])
+
             vc = s_nonnull[col].astype(str).value_counts().sort_index()
             rec["n_levels"] = int(len(vc))
             rec["level_counts_json"] = json.dumps(vc.to_dict())
@@ -378,6 +390,9 @@ def _process_species_phenotypes(
         else:
             # binary/continuous: write non-null rows
             out_df = s_nonnull.rename(columns={'bin_identifier': 'sample', col: 'phenotype'})
+            if typ == "binary":
+                # Ensure dtype is int for pyseer
+                out_df["phenotype"] = out_df["phenotype"].astype(int)
 
         p = pathlib.Path(out_dir) / f"{species}__{re.sub(r'[^A-Za-z0-9_.-]+','_',col)}.pheno.tsv"
         out_df.to_csv(p, sep='\t', index=False)
