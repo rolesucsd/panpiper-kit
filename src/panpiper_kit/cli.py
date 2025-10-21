@@ -172,6 +172,124 @@ def _track_pyseer_run(species: str, variable: str, run_type: str,
     }
 
 
+def _generate_analysis_summary(phenos: Dict[str, List[Tuple[str, str, str]]], 
+                              sp_to_samples: Dict[str, List[str]], 
+                              remaining_species: Dict[str, List[str]], 
+                              args: argparse.Namespace, 
+                              assoc_dir: pathlib.Path) -> None:
+    """
+    Generate a comprehensive summary of all input files and their analysis status.
+    
+    Args:
+        phenos: Dictionary of phenotype information per species
+        sp_to_samples: Dictionary mapping species to sample lists
+        remaining_species: Dictionary of species that need processing
+        args: Command line arguments
+        assoc_dir: Directory for association test results
+    """
+    logger.info("=" * 80)
+    logger.info("COMPREHENSIVE ANALYSIS SUMMARY")
+    logger.info("=" * 80)
+    
+    # Summary statistics
+    total_species = len(sp_to_samples)
+    remaining_count = len(remaining_species)
+    completed_count = total_species - remaining_count
+    
+    logger.info(f"Total species: {total_species}")
+    logger.info(f"Already completed: {completed_count}")
+    logger.info(f"Will process: {remaining_count}")
+    logger.info("")
+    
+    # Analyze each species and phenotype
+    all_analyses = []
+    
+    for species in sorted(sp_to_samples.keys()):
+        species_phenos = phenos.get(species, [])
+        n_samples = len(sp_to_samples[species])
+        is_remaining = species in remaining_species
+        
+        logger.info(f"SPECIES: {species} (N={n_samples}) {'[REMAINING]' if is_remaining else '[COMPLETED]'}")
+        logger.info("-" * 60)
+        
+        if not species_phenos:
+            logger.info("  No phenotypes found for this species")
+            continue
+            
+        for var, typ, pheno_tsv in species_phenos:
+            # Check if phenotype file exists and analyze it
+            file_exists = os.path.exists(pheno_tsv)
+            if not file_exists:
+                logger.info(f"  {var} ({typ}): MISSING FILE - {pheno_tsv}")
+                continue
+                
+            try:
+                df = pd.read_csv(pheno_tsv, sep='\t')
+                n_total = len(df)
+                n_valid = len(df.dropna(subset=['phenotype']))
+                valid_phenos = df['phenotype'].dropna()
+                
+                # Analyze phenotype distribution
+                if typ == 'binary':
+                    if len(valid_phenos.unique()) == 2:
+                        value_counts = valid_phenos.value_counts()
+                        min_group = value_counts.min()
+                        max_group = value_counts.max()
+                        logger.info(f"  {var} ({typ}): N={n_valid} | Groups: {dict(value_counts)} | Min group: {min_group}")
+                        
+                        # Check Pyseer requirements
+                        if min_group < 2:
+                            logger.info(f"    → SKIP PYSEER: Insufficient samples per group (min: {min_group})")
+                        else:
+                            logger.info(f"    → RUN PYSEER: Sufficient samples per group")
+                    else:
+                        logger.info(f"  {var} ({typ}): N={n_valid} | NOT BINARY - {len(valid_phenos.unique())} unique values")
+                        
+                elif typ == 'continuous':
+                    nunique = valid_phenos.nunique()
+                    logger.info(f"  {var} ({typ}): N={n_valid} | Unique values: {nunique}")
+                    
+                    if nunique < args.min_unique_cont:
+                        logger.info(f"    → SKIP PYSEER: Insufficient unique values ({nunique} < {args.min_unique_cont})")
+                    else:
+                        logger.info(f"    → RUN PYSEER: Sufficient unique values")
+                        
+                elif typ == 'categorical':
+                    value_counts = valid_phenos.value_counts()
+                    n_groups = len(value_counts)
+                    min_group = value_counts.min()
+                    logger.info(f"  {var} ({typ}): N={n_valid} | Groups: {n_groups} | Min group: {min_group}")
+                    logger.info(f"    → DISTANCE TEST: Will run PERMANOVA")
+                    
+                    # Check pairwise requirements
+                    if n_groups >= 2 and min_group >= args.pair_min_n:
+                        logger.info(f"    → PAIRWISE TESTS: Will run (min group: {min_group} >= {args.pair_min_n})")
+                        
+                        # Check pairwise Pyseer requirements
+                        large_groups = value_counts[value_counts >= args.pair_pyseer_min_n]
+                        if len(large_groups) >= 2:
+                            logger.info(f"    → PAIRWISE PYSEER: Will run for {len(large_groups)} groups (>= {args.pair_pyseer_min_n})")
+                        else:
+                            logger.info(f"    → SKIP PAIRWISE PYSEER: Only {len(large_groups)} groups >= {args.pair_pyseer_min_n}")
+                    else:
+                        logger.info(f"    → SKIP PAIRWISE: Insufficient groups or samples (groups: {n_groups}, min: {min_group})")
+                
+            except Exception as e:
+                logger.info(f"  {var} ({typ}): ERROR reading file - {e}")
+                
+        logger.info("")
+    
+    # Summary of parameters
+    logger.info("ANALYSIS PARAMETERS:")
+    logger.info("-" * 30)
+    logger.info(f"Min samples per species: {args.min_n}")
+    logger.info(f"Min samples per group (pairwise): {args.pair_min_n}")
+    logger.info(f"Min samples per group (pairwise Pyseer): {args.pair_pyseer_min_n}")
+    logger.info(f"Min unique values (continuous): {args.min_unique_cont}")
+    logger.info(f"Max missing fraction: {args.max_missing_frac}")
+    logger.info("=" * 80)
+
+
 def _write_pyseer_tracking_report(tracking_data: List[Dict[str, str]], 
                                  output_file: pathlib.Path) -> None:
     """
@@ -1043,6 +1161,9 @@ def main() -> None:
     # Build species -> sample list and determine which species to process
     sp_to_samples = _build_species_sample_map(ani, s2p, args.min_n)
     remaining_species = _get_remaining_species(sp_to_samples, args, phenos, mash_dir, assoc_dir, unitig_dir)
+    
+    # Generate comprehensive summary of all input files and their status
+    _generate_analysis_summary(phenos, sp_to_samples, remaining_species, args, assoc_dir)
 
     # Generate expected Pyseer runs list
     expected_pyseer_runs = _generate_expected_pyseer_runs(phenos, assoc_dir)
