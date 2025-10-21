@@ -27,6 +27,194 @@ DEFAULT_MIN_UNIQUE_CONT = 3
 
 # ----- helper functions -----
 
+def _generate_expected_pyseer_runs(phenos: Dict[str, List[Tuple[str, str, str]]], 
+                                  assoc_dir: pathlib.Path) -> List[Dict[str, str]]:
+    """
+    Generate a list of all expected Pyseer runs based on phenotype data.
+    
+    Args:
+        phenos: Dictionary of phenotype information per species
+        assoc_dir: Directory for association test results
+        
+    Returns:
+        List of dictionaries containing expected run information
+    """
+    expected_runs = []
+    
+    for species, phenotypes in phenos.items():
+        for var, typ, pheno_tsv in phenotypes:
+            if typ in ('binary', 'continuous'):
+                # Main phenotype Pyseer run
+                expected_runs.append({
+                    'species': species,
+                    'variable': var,
+                    'type': typ,
+                    'pheno_tsv': pheno_tsv,
+                    'output_file': str(assoc_dir / f'{species}__{var}.pyseer.tsv'),
+                    'fdr_file': str(assoc_dir / f'{species}__{var}.pyseer.fdr.tsv'),
+                    'run_type': 'main_phenotype'
+                })
+    
+    return expected_runs
+
+
+def _check_pyseer_preconditions(pheno_tsv: str, min_samples: int = 2) -> Tuple[bool, str]:
+    """
+    Check if a phenotype file meets basic preconditions for Pyseer analysis.
+    
+    Args:
+        pheno_tsv: Path to phenotype TSV file
+        min_samples: Minimum number of samples required
+        
+    Returns:
+        Tuple of (can_run, reason_if_not)
+    """
+    try:
+        df = pd.read_csv(pheno_tsv, sep='\t')
+        
+        if df.empty:
+            return False, "Phenotype file is empty"
+        
+        if 'sample' not in df.columns or 'phenotype' not in df.columns:
+            return False, "Missing required columns (sample, phenotype)"
+        
+        if len(df) < min_samples:
+            return False, f"Insufficient samples ({len(df)} < {min_samples})"
+        
+        # Check for valid phenotype values
+        valid_phenos = df['phenotype'].dropna()
+        if len(valid_phenos) < min_samples:
+            return False, f"Insufficient valid phenotype values ({len(valid_phenos)} < {min_samples})"
+        
+        # For binary phenotypes, check both levels have sufficient samples
+        if len(valid_phenos.unique()) == 2:
+            value_counts = valid_phenos.value_counts()
+            min_count = value_counts.min()
+            if min_count < 2:  # Pyseer needs at least 2 samples per group
+                return False, f"Insufficient samples per group (min: {min_count})"
+        
+        return True, ""
+        
+    except Exception as e:
+        return False, f"Error reading phenotype file: {e}"
+
+
+def _validate_pyseer_inputs(pheno_tsv: str, unitig_file: str) -> Tuple[bool, List[str]]:
+    """
+    Validate that input files exist and are readable for Pyseer.
+    
+    Args:
+        pheno_tsv: Path to phenotype TSV file
+        unitig_file: Path to unitig file
+        
+    Returns:
+        Tuple of (is_valid, error_messages)
+    """
+    errors = []
+    
+    # Check phenotype file
+    if not os.path.exists(pheno_tsv):
+        errors.append(f"Phenotype file does not exist: {pheno_tsv}")
+    else:
+        try:
+            df = pd.read_csv(pheno_tsv, sep='\t')
+            if df.empty:
+                errors.append(f"Phenotype file is empty: {pheno_tsv}")
+            elif 'sample' not in df.columns or 'phenotype' not in df.columns:
+                errors.append(f"Phenotype file missing required columns (sample, phenotype): {pheno_tsv}")
+            elif len(df) < 2:
+                errors.append(f"Phenotype file has insufficient samples (<2): {pheno_tsv}")
+        except Exception as e:
+            errors.append(f"Phenotype file is not readable: {pheno_tsv} - {e}")
+    
+    # Check unitig file
+    if not os.path.exists(unitig_file):
+        errors.append(f"Unitig file does not exist: {unitig_file}")
+    else:
+        try:
+            if os.path.getsize(unitig_file) == 0:
+                errors.append(f"Unitig file is empty: {unitig_file}")
+        except Exception as e:
+            errors.append(f"Unitig file is not accessible: {unitig_file} - {e}")
+    
+    return len(errors) == 0, errors
+
+
+def _track_pyseer_run(species: str, variable: str, run_type: str, 
+                     pheno_tsv: str, unitig_file: str, output_file: str,
+                     status: str, error_msg: str = None) -> Dict[str, str]:
+    """
+    Track a Pyseer run with its status and details.
+    
+    Args:
+        species: Species name
+        variable: Variable name
+        run_type: Type of run (main_phenotype, pairwise, etc.)
+        pheno_tsv: Input phenotype file
+        unitig_file: Input unitig file
+        output_file: Expected output file
+        status: Run status (expected, started, completed, failed, skipped)
+        error_msg: Error message if failed
+        
+    Returns:
+        Dictionary with run tracking information
+    """
+    return {
+        'species': species,
+        'variable': variable,
+        'run_type': run_type,
+        'pheno_tsv': pheno_tsv,
+        'unitig_file': unitig_file,
+        'output_file': output_file,
+        'status': status,
+        'error_msg': error_msg or '',
+        'timestamp': pd.Timestamp.now().isoformat()
+    }
+
+
+def _write_pyseer_tracking_report(tracking_data: List[Dict[str, str]], 
+                                 output_file: pathlib.Path) -> None:
+    """
+    Write a comprehensive Pyseer tracking report.
+    
+    Args:
+        tracking_data: List of tracking dictionaries
+        output_file: Path to write the report
+    """
+    if not tracking_data:
+        logger.warning("No Pyseer tracking data to write")
+        return
+    
+    df = pd.DataFrame(tracking_data)
+    
+    # Add summary statistics
+    summary = {
+        'total_expected': len(df),
+        'completed': len(df[df['status'] == 'completed']),
+        'failed': len(df[df['status'] == 'failed']),
+        'skipped': len(df[df['status'] == 'skipped']),
+        'started': len(df[df['status'] == 'started']),
+        'expected': len(df[df['status'] == 'expected'])
+    }
+    
+    # Write detailed report
+    df.to_csv(output_file, sep='\t', index=False)
+    
+    # Write summary
+    summary_file = output_file.parent / f"{output_file.stem}_summary.tsv"
+    pd.DataFrame([summary]).to_csv(summary_file, sep='\t', index=False)
+    
+    logger.info(f"Pyseer tracking report written to: {output_file}")
+    logger.info(f"Pyseer summary: {summary}")
+    
+    # Log failed runs
+    failed_runs = df[df['status'] == 'failed']
+    if not failed_runs.empty:
+        logger.warning(f"{len(failed_runs)} Pyseer runs failed:")
+        for _, run in failed_runs.iterrows():
+            logger.warning(f"  {run['species']}__{run['variable']}: {run['error_msg']}")
+
+
 def _build_species_sample_map(ani: pd.DataFrame, s2p: Dict[str, str], min_n: int) -> Dict[str, List[str]]:
     """
     Build mapping from species to sample lists, filtering by minimum sample count.
@@ -47,9 +235,9 @@ def _build_species_sample_map(ani: pd.DataFrame, s2p: Dict[str, str], min_n: int
 def _get_remaining_species(sp_to_samples: Dict[str, List[str]], args: argparse.Namespace, 
                           phenos: Dict[str, List[Tuple[str, str, str]]],
                           mash_dir: pathlib.Path, assoc_dir: pathlib.Path, 
-                          unitig_dir: pathlib.Path, progress_file: pathlib.Path) -> Dict[str, List[str]]:
+                          unitig_dir: pathlib.Path) -> Dict[str, List[str]]:
     """
-    Determine which species need to be processed based on resume logic.
+    Determine which species need to be processed based on file existence.
     
     Args:
         sp_to_samples: Dictionary mapping species to sample lists
@@ -58,22 +246,18 @@ def _get_remaining_species(sp_to_samples: Dict[str, List[str]], args: argparse.N
         mash_dir: Directory for Mash output files
         assoc_dir: Directory for association test results
         unitig_dir: Directory for unitig files
-        progress_file: Path to progress log file
         
     Returns:
         Dictionary of species that need to be processed
     """
     if args.resume and not args.force:
-        completed_species = load_completed_species(progress_file)
-        logger.info(f"Found {len(completed_species)} previously completed species in progress log")
-        
         # Check which species are actually complete (file-based verification)
         actually_complete = set()
-        for sp in completed_species:
+        for sp in sp_to_samples.keys():
             if is_species_complete(sp, phenos, mash_dir, assoc_dir, unitig_dir):
                 actually_complete.add(sp)
-            else:
-                logger.info(f"Species {sp} marked as complete but files missing, will re-run")
+        
+        logger.info(f"Found {len(actually_complete)} previously completed species based on file existence")
         
         # Filter out completed species
         remaining = {sp: sams for sp, sams in sp_to_samples.items() 
@@ -150,51 +334,43 @@ def is_species_complete(
         if not dist_file.exists():
             return False
         
-        # Check GWAS files for binary/continuous phenotypes
+        # Check raw Pyseer files for binary/continuous phenotypes
         if typ in ('binary', 'continuous'):
+            raw_pyseer_file = assoc_dir / f'{species}__{var}.pyseer.tsv'
+            if not raw_pyseer_file.exists():
+                return False
+            
+            # Check FDR-corrected Pyseer files
             gwas_file = assoc_dir / f'{species}__{var}.pyseer.fdr.tsv'
             if not gwas_file.exists():
                 return False
     
+    # Check pairwise files if any categorical phenotypes exist
+    has_categorical = any(typ == 'categorical' for _, typ, _ in phenos.get(species, []))
+    if has_categorical:
+        # Check combined pairwise association file
+        pairwise_assoc_file = assoc_dir / f'{species}.pairwise_assoc.tsv'
+        if not pairwise_assoc_file.exists():
+            return False
+        
+        # Check combined pairwise Pyseer file
+        pairwise_pyseer_file = assoc_dir / f'{species}.pairwise.pyseer.tsv'
+        if not pairwise_pyseer_file.exists():
+            return False
+        
+        # Check pairwise directory exists
+        pairwise_dir = assoc_dir / species / 'pairwise'
+        if not pairwise_dir.exists():
+            return False
+        
+        # Check for individual pairwise files (at least one should exist)
+        pairwise_files = list(pairwise_dir.glob(f'{species}__*.pyseer.tsv'))
+        if not pairwise_files:
+            return False
+    
     return True
 
 
-def log_progress(species: str, status: str, progress_file: pathlib.Path) -> None:
-    """
-    Log species processing progress to a file.
-    
-    Args:
-        species: Species name
-        status: Processing status ('started', 'completed', 'failed')
-        progress_file: Path to progress log file
-    """
-    import datetime
-    timestamp = datetime.datetime.now().isoformat()
-    with open(progress_file, 'a') as f:
-        f.write(f"{timestamp}\t{species}\t{status}\n")
-
-
-def load_completed_species(progress_file: pathlib.Path) -> set:
-    """
-    Load list of completed species from progress file.
-    
-    Args:
-        progress_file: Path to progress log file
-        
-    Returns:
-        Set of species names that have been completed
-    """
-    completed = set()
-    if not progress_file.exists():
-        return completed
-    
-    with open(progress_file, 'r') as f:
-        for line in f:
-            parts = line.strip().split('\t')
-            if len(parts) >= 3 and parts[2] == 'completed':
-                completed.add(parts[1])
-    
-    return completed
 
 
 def are_phenotype_files_complete(species: str, phenos_dir: pathlib.Path) -> bool:
@@ -276,14 +452,17 @@ def _worker(
     phenos: Dict[str, List[Tuple[str, str, str]]], 
     mash_dir: pathlib.Path, 
     assoc_dir: pathlib.Path, 
-    unitig_dir: pathlib.Path,
-    progress_file: pathlib.Path
-) -> pd.DataFrame:
+    unitig_dir: pathlib.Path
+) -> Tuple[pd.DataFrame, List[Dict[str, str]]]:
     logger.info(f"Starting processing for species: {species}")
     
     if species not in phenos:
         logger.warning(f"No phenotypes found for species {species}")
-        return pd.DataFrame(columns=['species','metadata','test','stat','pvalue','n_samples'])
+        return pd.DataFrame(columns=['species','metadata','test','stat','pvalue','n_samples']), []
+    
+    # Initialize Pyseer tracking for this worker
+    worker_pyseer_tracking = []
+    
     """
     Worker function for parallel processing of species-specific analyses.
     
@@ -302,10 +481,9 @@ def _worker(
         progress_file: Path to progress log file
         
     Returns:
-        DataFrame containing association test results for this species
+        Tuple of (DataFrame containing association test results, Pyseer tracking data)
     """
-    # Log start of processing
-    log_progress(species, 'started', progress_file)
+    # Start processing
     
     try:
         # assign this worker its own thread budget
@@ -382,10 +560,33 @@ def _worker(
                     
                     out_fp = assoc_dir/f'{species}__{var}.pyseer.tsv'
                     
-                    # Check if input files exist
-                    if not os.path.exists(uc_pyseer):
-                        logger.error(f"Unitig file does not exist: {uc_pyseer}")
+                    # Check preconditions first (sample size, etc.)
+                    can_run, precondition_reason = _check_pyseer_preconditions(pheno_tsv, min_samples=2)
+                    if not can_run:
+                        logger.warning(f"Pyseer skipped for {species}__{var}: {precondition_reason}")
+                        worker_pyseer_tracking.append(_track_pyseer_run(
+                            species, var, 'main_phenotype', pheno_tsv, uc_pyseer, str(out_fp),
+                            'skipped', precondition_reason
+                        ))
                         continue
+                    
+                    # Validate inputs before running Pyseer
+                    is_valid, validation_errors = _validate_pyseer_inputs(pheno_tsv, uc_pyseer)
+                    
+                    if not is_valid:
+                        error_msg = "; ".join(validation_errors)
+                        logger.error(f"Pyseer input validation failed for {species}__{var}: {error_msg}")
+                        worker_pyseer_tracking.append(_track_pyseer_run(
+                            species, var, 'main_phenotype', pheno_tsv, uc_pyseer, str(out_fp),
+                            'failed', error_msg
+                        ))
+                        continue
+                    
+                    # Track that we're starting this run
+                    worker_pyseer_tracking.append(_track_pyseer_run(
+                        species, var, 'main_phenotype', pheno_tsv, uc_pyseer, str(out_fp),
+                        'started'
+                    ))
                     
                     # Run pyseer
                     import subprocess
@@ -401,14 +602,35 @@ def _worker(
                         if os.path.exists(out_fp) and os.path.getsize(out_fp) > 0:
                             logger.info(f"Pyseer completed successfully for {species}__{var}")
                             add_bh(str(out_fp), str(assoc_dir/f'{species}__{var}.pyseer.fdr.tsv'))
+                            
+                            # Track successful completion
+                            worker_pyseer_tracking.append(_track_pyseer_run(
+                                species, var, 'main_phenotype', pheno_tsv, uc_pyseer, str(out_fp),
+                                'completed'
+                            ))
                         else:
+                            error_msg = "Pyseer output is empty"
                             logger.warning(f"Pyseer output is empty for {species}__{var}")
+                            worker_pyseer_tracking.append(_track_pyseer_run(
+                                species, var, 'main_phenotype', pheno_tsv, uc_pyseer, str(out_fp),
+                                'failed', error_msg
+                            ))
                             
                     except subprocess.CalledProcessError as e:
-                        logger.error(f"Pyseer failed for {species}__{var}: return code {e.returncode}")
+                        error_msg = f"Pyseer failed with return code {e.returncode}"
+                        logger.error(f"Pyseer failed for {species}__{var}: {error_msg}")
+                        worker_pyseer_tracking.append(_track_pyseer_run(
+                            species, var, 'main_phenotype', pheno_tsv, uc_pyseer, str(out_fp),
+                            'failed', error_msg
+                        ))
                         continue
                     except Exception as e:
+                        error_msg = f"Unexpected error: {e}"
                         logger.error(f"Unexpected error running pyseer for {species}__{var}: {e}")
+                        worker_pyseer_tracking.append(_track_pyseer_run(
+                            species, var, 'main_phenotype', pheno_tsv, uc_pyseer, str(out_fp),
+                            'failed', error_msg
+                        ))
                         continue
 
             # Pairwise testing for categorical phenotypes with significant global association
@@ -426,8 +648,9 @@ def _worker(
                 if not sig_cat.empty:
                     # Initialize DM in this process so we can reuse the exact test function
                     _assoc_init_worker(str(mash_tsv))
-                    # Write pairwise outputs in the same folder as main association tests
-                    pair_dir = assoc_dir
+                    # Create species-specific pairwise directory
+                    pair_dir = assoc_dir / species / 'pairwise'
+                    pair_dir.mkdir(parents=True, exist_ok=True)
                     pairwise_outputs = []
                     pairwise_results = []  # Store pairwise PERMANOVA results
                     for _, r in sig_cat.iterrows():
@@ -464,11 +687,76 @@ def _worker(
                                 if n_g >= args.pair_pyseer_min_n and n_rest >= args.pair_pyseer_min_n:
                                     import subprocess
                                     out_fp = pair_dir / f"{species}__{var}__{g}_vs_rest.pyseer.tsv"
-                                    with open(out_fp, 'w') as fh:
-                                        cmd = ['pyseer','--phenotypes', str(tmp), '--kmers', uc_pyseer, '--uncompressed',
-                                               '--min-af', str(args.maf), '--cpu', str(t), '--no-distances']
-                                        subprocess.check_call(cmd, stdout=fh, stderr=subprocess.DEVNULL)
-                                    pairwise_outputs.append(out_fp)
+                                    
+                                    # Check preconditions for pairwise Pyseer
+                                    can_run, precondition_reason = _check_pyseer_preconditions(str(tmp), min_samples=2)
+                                    if not can_run:
+                                        logger.warning(f"Pairwise Pyseer skipped for {species}__{var}__{g}_vs_rest: {precondition_reason}")
+                                        worker_pyseer_tracking.append(_track_pyseer_run(
+                                            species, f"{var}__{g}_vs_rest", 'pairwise', str(tmp), uc_pyseer, str(out_fp),
+                                            'skipped', precondition_reason
+                                        ))
+                                    else:
+                                        # Validate inputs
+                                        is_valid, validation_errors = _validate_pyseer_inputs(str(tmp), uc_pyseer)
+                                        if not is_valid:
+                                            error_msg = "; ".join(validation_errors)
+                                            logger.error(f"Pairwise Pyseer input validation failed for {species}__{var}__{g}_vs_rest: {error_msg}")
+                                            worker_pyseer_tracking.append(_track_pyseer_run(
+                                                species, f"{var}__{g}_vs_rest", 'pairwise', str(tmp), uc_pyseer, str(out_fp),
+                                                'failed', error_msg
+                                            ))
+                                        else:
+                                            # Track start
+                                            worker_pyseer_tracking.append(_track_pyseer_run(
+                                                species, f"{var}__{g}_vs_rest", 'pairwise', str(tmp), uc_pyseer, str(out_fp),
+                                                'started'
+                                            ))
+                                            
+                                            try:
+                                                with open(out_fp, 'w') as fh:
+                                                    cmd = ['pyseer','--phenotypes', str(tmp), '--kmers', uc_pyseer, '--uncompressed',
+                                                           '--min-af', str(args.maf), '--cpu', str(t), '--no-distances']
+                                                    subprocess.check_call(cmd, stdout=fh, stderr=subprocess.DEVNULL)
+                                                
+                                                # Check if output was created and has content
+                                                if os.path.exists(out_fp) and os.path.getsize(out_fp) > 0:
+                                                    logger.info(f"Pairwise Pyseer completed successfully for {species}__{var}__{g}_vs_rest")
+                                                    worker_pyseer_tracking.append(_track_pyseer_run(
+                                                        species, f"{var}__{g}_vs_rest", 'pairwise', str(tmp), uc_pyseer, str(out_fp),
+                                                        'completed'
+                                                    ))
+                                                    pairwise_outputs.append(out_fp)
+                                                else:
+                                                    error_msg = "Pyseer output is empty"
+                                                    logger.warning(f"Pairwise Pyseer output is empty for {species}__{var}__{g}_vs_rest")
+                                                    worker_pyseer_tracking.append(_track_pyseer_run(
+                                                        species, f"{var}__{g}_vs_rest", 'pairwise', str(tmp), uc_pyseer, str(out_fp),
+                                                        'failed', error_msg
+                                                    ))
+                                                    
+                                            except subprocess.CalledProcessError as e:
+                                                error_msg = f"Pyseer failed with return code {e.returncode}"
+                                                logger.error(f"Pairwise Pyseer failed for {species}__{var}__{g}_vs_rest: {error_msg}")
+                                                worker_pyseer_tracking.append(_track_pyseer_run(
+                                                    species, f"{var}__{g}_vs_rest", 'pairwise', str(tmp), uc_pyseer, str(out_fp),
+                                                    'failed', error_msg
+                                                ))
+                                            except Exception as e:
+                                                error_msg = f"Unexpected error: {e}"
+                                                logger.error(f"Unexpected error running pairwise pyseer for {species}__{var}__{g}_vs_rest: {e}")
+                                                worker_pyseer_tracking.append(_track_pyseer_run(
+                                                    species, f"{var}__{g}_vs_rest", 'pairwise', str(tmp), uc_pyseer, str(out_fp),
+                                                    'failed', error_msg
+                                                ))
+                                else:
+                                    # Track skipped due to sample size
+                                    skip_reason = f"Insufficient samples for Pyseer (n_g={n_g}, n_rest={n_rest}, min_required={args.pair_pyseer_min_n})"
+                                    logger.info(f"Pairwise Pyseer skipped for {species}__{var}__{g}_vs_rest: {skip_reason}")
+                                    worker_pyseer_tracking.append(_track_pyseer_run(
+                                        species, f"{var}__{g}_vs_rest", 'pairwise', str(tmp), uc_pyseer, str(pair_dir / f"{species}__{var}__{g}_vs_rest.pyseer.tsv"),
+                                        'skipped', skip_reason
+                                    ))
                         # Group-vs-group
                         for g1, g2 in itertools.combinations(groups, 2):
                             sub = ph[ph['phenotype'].isin([g1, g2])].copy()
@@ -495,11 +783,76 @@ def _worker(
                                 if n1 >= args.pair_pyseer_min_n and n2 >= args.pair_pyseer_min_n:
                                     import subprocess
                                     out_fp = pair_dir / f"{species}__{var}__{g1}_vs_{g2}.pyseer.tsv"
-                                    with open(out_fp, 'w') as fh:
-                                        cmd = ['pyseer','--phenotypes', str(tmp), '--kmers', uc_pyseer, '--uncompressed',
-                                               '--min-af', str(args.maf), '--cpu', str(t), '--no-distances']
-                                        subprocess.check_call(cmd, stdout=fh, stderr=subprocess.DEVNULL)
-                                    pairwise_outputs.append(out_fp)
+                                    
+                                    # Check preconditions for pairwise Pyseer
+                                    can_run, precondition_reason = _check_pyseer_preconditions(str(tmp), min_samples=2)
+                                    if not can_run:
+                                        logger.warning(f"Pairwise Pyseer skipped for {species}__{var}__{g1}_vs_{g2}: {precondition_reason}")
+                                        worker_pyseer_tracking.append(_track_pyseer_run(
+                                            species, f"{var}__{g1}_vs_{g2}", 'pairwise', str(tmp), uc_pyseer, str(out_fp),
+                                            'skipped', precondition_reason
+                                        ))
+                                    else:
+                                        # Validate inputs
+                                        is_valid, validation_errors = _validate_pyseer_inputs(str(tmp), uc_pyseer)
+                                        if not is_valid:
+                                            error_msg = "; ".join(validation_errors)
+                                            logger.error(f"Pairwise Pyseer input validation failed for {species}__{var}__{g1}_vs_{g2}: {error_msg}")
+                                            worker_pyseer_tracking.append(_track_pyseer_run(
+                                                species, f"{var}__{g1}_vs_{g2}", 'pairwise', str(tmp), uc_pyseer, str(out_fp),
+                                                'failed', error_msg
+                                            ))
+                                        else:
+                                            # Track start
+                                            worker_pyseer_tracking.append(_track_pyseer_run(
+                                                species, f"{var}__{g1}_vs_{g2}", 'pairwise', str(tmp), uc_pyseer, str(out_fp),
+                                                'started'
+                                            ))
+                                            
+                                            try:
+                                                with open(out_fp, 'w') as fh:
+                                                    cmd = ['pyseer','--phenotypes', str(tmp), '--kmers', uc_pyseer, '--uncompressed',
+                                                           '--min-af', str(args.maf), '--cpu', str(t), '--no-distances']
+                                                    subprocess.check_call(cmd, stdout=fh, stderr=subprocess.DEVNULL)
+                                                
+                                                # Check if output was created and has content
+                                                if os.path.exists(out_fp) and os.path.getsize(out_fp) > 0:
+                                                    logger.info(f"Pairwise Pyseer completed successfully for {species}__{var}__{g1}_vs_{g2}")
+                                                    worker_pyseer_tracking.append(_track_pyseer_run(
+                                                        species, f"{var}__{g1}_vs_{g2}", 'pairwise', str(tmp), uc_pyseer, str(out_fp),
+                                                        'completed'
+                                                    ))
+                                                    pairwise_outputs.append(out_fp)
+                                                else:
+                                                    error_msg = "Pyseer output is empty"
+                                                    logger.warning(f"Pairwise Pyseer output is empty for {species}__{var}__{g1}_vs_{g2}")
+                                                    worker_pyseer_tracking.append(_track_pyseer_run(
+                                                        species, f"{var}__{g1}_vs_{g2}", 'pairwise', str(tmp), uc_pyseer, str(out_fp),
+                                                        'failed', error_msg
+                                                    ))
+                                                    
+                                            except subprocess.CalledProcessError as e:
+                                                error_msg = f"Pyseer failed with return code {e.returncode}"
+                                                logger.error(f"Pairwise Pyseer failed for {species}__{var}__{g1}_vs_{g2}: {error_msg}")
+                                                worker_pyseer_tracking.append(_track_pyseer_run(
+                                                    species, f"{var}__{g1}_vs_{g2}", 'pairwise', str(tmp), uc_pyseer, str(out_fp),
+                                                    'failed', error_msg
+                                                ))
+                                            except Exception as e:
+                                                error_msg = f"Unexpected error: {e}"
+                                                logger.error(f"Unexpected error running pairwise pyseer for {species}__{var}__{g1}_vs_{g2}: {e}")
+                                                worker_pyseer_tracking.append(_track_pyseer_run(
+                                                    species, f"{var}__{g1}_vs_{g2}", 'pairwise', str(tmp), uc_pyseer, str(out_fp),
+                                                    'failed', error_msg
+                                                ))
+                                else:
+                                    # Track skipped due to sample size
+                                    skip_reason = f"Insufficient samples for Pyseer (n1={n1}, n2={n2}, min_required={args.pair_pyseer_min_n})"
+                                    logger.info(f"Pairwise Pyseer skipped for {species}__{var}__{g1}_vs_{g2}: {skip_reason}")
+                                    worker_pyseer_tracking.append(_track_pyseer_run(
+                                        species, f"{var}__{g1}_vs_{g2}", 'pairwise', str(tmp), uc_pyseer, str(pair_dir / f"{species}__{var}__{g1}_vs_{g2}.pyseer.tsv"),
+                                        'skipped', skip_reason
+                                    ))
                     # Save pairwise PERMANOVA results
                     if pairwise_results:
                         pairwise_df = pd.DataFrame(pairwise_results)
@@ -524,13 +877,12 @@ def _worker(
             except Exception as e:
                 logger.error(f"Pairwise testing failed for {species}: {e}")
         
-        # Log successful completion
-        log_progress(species, 'completed', progress_file)
-        return pd.concat(rows, ignore_index=True) if rows else pd.DataFrame(columns=['species','metadata','test','stat','pvalue','n_samples'])
+        # Processing completed successfully
+        return pd.concat(rows, ignore_index=True) if rows else pd.DataFrame(columns=['species','metadata','test','stat','pvalue','n_samples']), worker_pyseer_tracking
     
     except Exception as e:
-        # Log failure
-        log_progress(species, f'failed: {str(e)}', progress_file)
+        # Processing failed
+        logger.error(f"Processing failed for species {species}: {e}")
         raise
 
 def main() -> None:
@@ -606,14 +958,10 @@ def main() -> None:
     unitig_dir = OUT/'unitigs_by_species'; ensure_dir(unitig_dir)
     ensure_dir(OUT/'assoc')
     
-    # Progress tracking
-    progress_file = OUT / 'progress.log'
-    
     # Log run information
     logger.info(f"Output directory: {OUT}")
-    logger.info(f"Progress log: {progress_file}")
     if args.resume and not args.force:
-        logger.info("Resume mode: Will skip completed species")
+        logger.info("Resume mode: Will skip completed species based on file existence")
     elif args.force:
         logger.info("Force mode: Will re-run all species")
 
@@ -694,23 +1042,38 @@ def main() -> None:
 
     # Build species -> sample list and determine which species to process
     sp_to_samples = _build_species_sample_map(ani, s2p, args.min_n)
-    remaining_species = _get_remaining_species(sp_to_samples, args, phenos, mash_dir, assoc_dir, unitig_dir, progress_file)
+    remaining_species = _get_remaining_species(sp_to_samples, args, phenos, mash_dir, assoc_dir, unitig_dir)
+
+    # Generate expected Pyseer runs list
+    expected_pyseer_runs = _generate_expected_pyseer_runs(phenos, assoc_dir)
+    logger.info(f"Generated {len(expected_pyseer_runs)} expected Pyseer runs")
+    
+    # Write expected runs to file for reference
+    expected_runs_file = OUT / 'expected_pyseer_runs.tsv'
+    if expected_pyseer_runs:
+        pd.DataFrame(expected_pyseer_runs).to_csv(expected_runs_file, sep='\t', index=False)
+        logger.info(f"Expected Pyseer runs written to: {expected_runs_file}")
 
     results = []
+    pyseer_tracking = []
     with ProcessPoolExecutor(max_workers=args.workers) as ex:
         futs = []
         for sp, sams in remaining_species.items():
-            futs.append(ex.submit(_worker, sp, sams, s2p, args, phenos, mash_dir, assoc_dir, unitig_dir, progress_file))
+            futs.append(ex.submit(_worker, sp, sams, s2p, args, phenos, mash_dir, assoc_dir, unitig_dir))
         for f in as_completed(futs):
-            df = f.result()
+            df, worker_tracking = f.result()
             if not df.empty:
                 results.append(df)
+            pyseer_tracking.extend(worker_tracking)
 
     # Collect results from previously completed species if resuming
     if args.resume and not args.force:
-        completed_species = load_completed_species(progress_file)
-        actually_complete = {sp for sp in completed_species 
-                           if is_species_complete(sp, phenos, mash_dir, assoc_dir, unitig_dir)}
+        # Find completed species based on file existence
+        actually_complete = set()
+        for sp in sp_to_samples.keys():
+            if is_species_complete(sp, phenos, mash_dir, assoc_dir, unitig_dir):
+                actually_complete.add(sp)
+        
         existing_results = _collect_existing_results(actually_complete, phenos, assoc_dir)
         results.extend(existing_results)
 
@@ -722,6 +1085,13 @@ def main() -> None:
     else:
         logger.info("No results to write")
     
+    # Write Pyseer tracking report
+    if pyseer_tracking:
+        tracking_report_file = OUT / 'pyseer_tracking_report.tsv'
+        _write_pyseer_tracking_report(pyseer_tracking, tracking_report_file)
+    else:
+        logger.warning("No Pyseer tracking data collected")
+
     # Always summarize pyseer results
     logger.info("Summarizing pyseer results...")
     summarize_pyseer(

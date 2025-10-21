@@ -84,19 +84,75 @@ So you can immediately see which species × phenotypes show meaningful structure
 
 ## Outputs
 
-The main output directory (`--out`) will contain:
+The main output directory (`--out`) contains the following organized structure:
 
+### Main Results
 - `assoc/mash_lineage_assoc_by_species.fdr.tsv`  
-  → one row per (species × phenotype) with test type, stat, raw p-value, BH q-value.
+  → Combined results: one row per (species × phenotype) with test type, stat, raw p-value, BH q-value.
 
-- `assoc_by_species/<species>__<phenotype>.dist_assoc.tsv`  
-  → raw PERMANOVA/Mantel output for a specific phenotype.
+- `assoc/pyseer_summary.tsv`  
+  → Summary of significant pyseer hits across all species with FDR correction.
 
-- `assoc_by_species/<species>__<phenotype>.pyseer.fdr.tsv`  
-  → unitig GWAS results for binary/continuous phenotypes, BH-corrected.
+### Per-Species Results (`assoc_by_species/`)
+- `<species>__<phenotype>.dist_assoc.tsv`  
+  → Raw PERMANOVA/Mantel output for a specific phenotype.
 
-- `unitigs_by_species/<species>/uc.pyseer`  
-  → pyseer-ready unitig presence/absence per species (reusable).
+- `<species>__<phenotype>.pyseer.tsv`  
+  → Raw unitig GWAS results for binary/continuous phenotypes.
+
+- `<species>__<phenotype>.pyseer.fdr.tsv`  
+  → Unitig GWAS results with BH/FDR correction applied.
+
+- `<species>.pairwise_assoc.tsv`  
+  → Combined pairwise PERMANOVA results for categorical phenotypes with significant global association.
+
+- `<species>.pairwise.pyseer.tsv`  
+  → Combined pairwise pyseer results for significant categorical comparisons.
+
+### Individual Pairwise Comparisons (`assoc_by_species/<species>/pairwise/`)
+For categorical phenotypes with significant global association, individual Pyseer result files are created in species-specific subdirectories:
+
+- `<species>/pairwise/<species>__<variable>__<group>_vs_rest.pyseer.tsv`  
+  → Pyseer results for one-vs-rest comparison (if sample size sufficient).
+
+- `<species>/pairwise/<species>__<variable>__<group1>_vs_<group2>.pyseer.tsv`  
+  → Pyseer results for group-vs-group comparison (if sample size sufficient).
+
+*Note: Binary phenotype files (`.binary.tsv`) are created temporarily for Pyseer input but are not permanently saved.*
+
+### Intermediate Files (`mash_by_species/`)
+- `<species>/mash.tsv`  
+  → Mash distance matrix for the species.
+
+- `<species>/refs.txt`  
+  → List of FASTA file paths used for unitig calling.
+
+### Unitig Files (`unitigs_by_species/`)
+- `<species>/uc.pyseer`  
+  → Pyseer-ready unitig presence/absence matrix per species (reusable).
+
+- `<species>/unitig_caller.log`  
+  → Log from unitig-caller execution.
+
+### Tracking and Debugging
+- `expected_pyseer_runs.tsv`  
+  → List of all expected Pyseer runs based on phenotype data.
+
+- `pyseer_tracking_report.tsv`  
+  → Detailed tracking of all Pyseer runs with status (completed, failed, skipped) and error messages.
+
+- `pyseer_tracking_report_summary.tsv`  
+  → Summary statistics of Pyseer run outcomes.
+
+### Temporary Files (`tmp/`)
+- `phenos/<species>.list.tsv`  
+  → Manifest of phenotype files for each species.
+
+- `phenos/<species>__<variable>.pheno.tsv`  
+  → Cleaned phenotype files ready for analysis.
+
+- `phenos/<species>.pheno_summary.tsv`  
+  → Detailed summary of phenotype processing for each species.
 
 ---
 
