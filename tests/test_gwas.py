@@ -12,8 +12,8 @@ if str(SRC_DIR) not in sys.path:
 from panpiper_kit.gwas import ensure_unitigs
 
 
-@patch('panpiper_kit.files.run')
-@patch('panpiper_kit.files.ensure_dir')
+@patch('panpiper_kit.gwas.run')
+@patch('panpiper_kit.gwas.ensure_dir')
 @patch('os.path.exists')
 def test_ensure_unitigs_existing(mock_exists, mock_ensure_dir, mock_run):
     """Test ensure_unitigs when output already exists."""

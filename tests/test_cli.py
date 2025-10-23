@@ -75,21 +75,20 @@ def test_build_species_sample_map_missing_samples():
 def test_get_remaining_species_no_resume():
     """Test _get_remaining_species without resume."""
     sp_to_samples = {'species1': ['sample1'], 'species2': ['sample2']}
-    
+
     # Mock args
     args = argparse.Namespace()
     args.resume = False
     args.force = False
-    
+
     # Mock other parameters
     phenos = {}
     mash_dir = pathlib.Path('/tmp/mash')
     assoc_dir = pathlib.Path('/tmp/assoc')
     unitig_dir = pathlib.Path('/tmp/unitig')
-    progress_file = pathlib.Path('/tmp/progress.log')
-    
-    result = _get_remaining_species(sp_to_samples, args, phenos, mash_dir, assoc_dir, unitig_dir, progress_file)
-    
+
+    result = _get_remaining_species(sp_to_samples, args, phenos, mash_dir, assoc_dir, unitig_dir)
+
     # Should return all species when not resuming
     assert result == sp_to_samples
 
@@ -97,19 +96,18 @@ def test_get_remaining_species_no_resume():
 def test_get_remaining_species_force():
     """Test _get_remaining_species with force."""
     sp_to_samples = {'species1': ['sample1'], 'species2': ['sample2']}
-    
+
     args = argparse.Namespace()
     args.resume = True
     args.force = True
-    
+
     phenos = {}
     mash_dir = pathlib.Path('/tmp/mash')
     assoc_dir = pathlib.Path('/tmp/assoc')
     unitig_dir = pathlib.Path('/tmp/unitig')
-    progress_file = pathlib.Path('/tmp/progress.log')
-    
-    result = _get_remaining_species(sp_to_samples, args, phenos, mash_dir, assoc_dir, unitig_dir, progress_file)
-    
+
+    result = _get_remaining_species(sp_to_samples, args, phenos, mash_dir, assoc_dir, unitig_dir)
+
     # Should return all species when forcing
     assert result == sp_to_samples
 
