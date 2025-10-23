@@ -102,8 +102,8 @@ def summarize_pyseer(indir: str, out: str, alpha: float = 0.05,
     logger.info(f"Starting pyseer summarization from {indir}")
     logger.info(f"Output will be written to {out}")
     logger.info(f"FDR threshold: {alpha}")
-    
-    files = sorted(glob.glob(os.path.join(indir, pattern)))
+
+    files = sorted(glob.glob(os.path.join(indir, pattern), recursive=True))
     if not files:
         logger.warning(f"No files matching {pattern} under {indir}")
         raise SystemExit(f"No files matching {pattern} under {indir}")
@@ -164,7 +164,9 @@ def summarize_pyseer(indir: str, out: str, alpha: float = 0.05,
                 continue
 
             sub = chunk.loc[mask, cols_present + ['q_filter_bh','q_lrt_bh']].copy()
-            sub.insert(0, '__file__', bname)
+            # Clean up source reference - remove file extension for cleaner output
+            clean_source = bname.replace('.pyseer.tsv.gz', '').replace('.pyseer.tsv', '')
+            sub.insert(0, 'source', clean_source)
             sub.insert(1, 'species', species)
             sub.insert(2, 'metadata', metadata)
 
@@ -179,7 +181,7 @@ def summarize_pyseer(indir: str, out: str, alpha: float = 0.05,
 
     if not wrote_header:
         # write an empty header (no hits)
-        header = ['__file__','species','metadata',
+        header = ['source','species','metadata',
                   'variant','af','filter-pvalue','q_filter_bh','lrt-pvalue','q_lrt_bh',
                   'beta','beta-std-err','intercept','notes']
         pd.DataFrame(columns=header).to_csv(out, sep='\t', index=False)

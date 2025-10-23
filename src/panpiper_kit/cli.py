@@ -27,20 +27,20 @@ DEFAULT_MIN_UNIQUE_CONT = 3
 
 # ----- helper functions -----
 
-def _generate_expected_pyseer_runs(phenos: Dict[str, List[Tuple[str, str, str]]], 
-                                  assoc_dir: pathlib.Path) -> List[Dict[str, str]]:
+def _generate_expected_pyseer_runs(phenos: Dict[str, List[Tuple[str, str, str]]],
+                                  pyseer_dir: pathlib.Path) -> List[Dict[str, str]]:
     """
     Generate a list of all expected Pyseer runs based on phenotype data.
-    
+
     Args:
         phenos: Dictionary of phenotype information per species
-        assoc_dir: Directory for association test results
-        
+        pyseer_dir: Directory for pyseer GWAS results
+
     Returns:
         List of dictionaries containing expected run information
     """
     expected_runs = []
-    
+
     for species, phenotypes in phenos.items():
         for var, typ, pheno_tsv in phenotypes:
             if typ in ('binary', 'continuous'):
@@ -50,11 +50,11 @@ def _generate_expected_pyseer_runs(phenos: Dict[str, List[Tuple[str, str, str]]]
                     'variable': var,
                     'type': typ,
                     'pheno_tsv': pheno_tsv,
-                    'output_file': str(assoc_dir / f'{species}__{var}.pyseer.tsv'),
-                    'fdr_file': str(assoc_dir / f'{species}__{var}.pyseer.fdr.tsv'),
+                    'output_file': str(pyseer_dir / species / f'{species}__{var}.pyseer.tsv'),
+                    'fdr_file': str(pyseer_dir / species / f'{species}__{var}.pyseer.fdr.tsv'),
                     'run_type': 'main_phenotype'
                 })
-    
+
     return expected_runs
 
 
@@ -172,20 +172,22 @@ def _track_pyseer_run(species: str, variable: str, run_type: str,
     }
 
 
-def _generate_analysis_summary(phenos: Dict[str, List[Tuple[str, str, str]]], 
-                              sp_to_samples: Dict[str, List[str]], 
-                              remaining_species: Dict[str, List[str]], 
-                              args: argparse.Namespace, 
-                              assoc_dir: pathlib.Path) -> None:
+def _generate_analysis_summary(phenos: Dict[str, List[Tuple[str, str, str]]],
+                              sp_to_samples: Dict[str, List[str]],
+                              remaining_species: Dict[str, List[str]],
+                              args: argparse.Namespace,
+                              pyseer_dir: pathlib.Path,
+                              distance_assoc_dir: pathlib.Path) -> None:
     """
     Generate a comprehensive summary of all input files and their analysis status.
-    
+
     Args:
         phenos: Dictionary of phenotype information per species
         sp_to_samples: Dictionary mapping species to sample lists
         remaining_species: Dictionary of species that need processing
         args: Command line arguments
-        assoc_dir: Directory for association test results
+        pyseer_dir: Directory for pyseer GWAS results
+        distance_assoc_dir: Directory for distance-based association results
     """
     logger.info("=" * 80)
     logger.info("COMPREHENSIVE ANALYSIS SUMMARY")
@@ -350,21 +352,22 @@ def _build_species_sample_map(ani: pd.DataFrame, s2p: Dict[str, str], min_n: int
             if len([s for s in ani.loc[ani['species']==sp, 'sample'] if s in s2p]) >= min_n}
 
 
-def _get_remaining_species(sp_to_samples: Dict[str, List[str]], args: argparse.Namespace, 
+def _get_remaining_species(sp_to_samples: Dict[str, List[str]], args: argparse.Namespace,
                           phenos: Dict[str, List[Tuple[str, str, str]]],
-                          mash_dir: pathlib.Path, assoc_dir: pathlib.Path, 
-                          unitig_dir: pathlib.Path) -> Dict[str, List[str]]:
+                          mash_dir: pathlib.Path, pyseer_dir: pathlib.Path,
+                          distance_assoc_dir: pathlib.Path, unitig_dir: pathlib.Path) -> Dict[str, List[str]]:
     """
     Determine which species need to be processed based on file existence.
-    
+
     Args:
         sp_to_samples: Dictionary mapping species to sample lists
         args: Command line arguments
         phenos: Dictionary of phenotype information per species
         mash_dir: Directory for Mash output files
-        assoc_dir: Directory for association test results
+        pyseer_dir: Directory for pyseer GWAS results
+        distance_assoc_dir: Directory for distance-based association results
         unitig_dir: Directory for unitig files
-        
+
     Returns:
         Dictionary of species that need to be processed
     """
@@ -372,13 +375,13 @@ def _get_remaining_species(sp_to_samples: Dict[str, List[str]], args: argparse.N
         # Check which species are actually complete (file-based verification)
         actually_complete = set()
         for sp in sp_to_samples.keys():
-            if is_species_complete(sp, phenos, mash_dir, assoc_dir, unitig_dir):
+            if is_species_complete(sp, phenos, mash_dir, pyseer_dir, distance_assoc_dir, unitig_dir):
                 actually_complete.add(sp)
-        
+
         logger.info(f"Found {len(actually_complete)} previously completed species based on file existence")
-        
+
         # Filter out completed species
-        remaining = {sp: sams for sp, sams in sp_to_samples.items() 
+        remaining = {sp: sams for sp, sams in sp_to_samples.items()
                     if sp not in actually_complete}
         logger.info(f"Will process {len(remaining)} remaining species")
         return remaining
@@ -388,50 +391,52 @@ def _get_remaining_species(sp_to_samples: Dict[str, List[str]], args: argparse.N
         return sp_to_samples
 
 
-def _collect_existing_results(actually_complete: set, phenos: Dict[str, List[Tuple[str, str, str]]], 
-                             assoc_dir: pathlib.Path) -> List[pd.DataFrame]:
+def _collect_existing_results(actually_complete: set, phenos: Dict[str, List[Tuple[str, str, str]]],
+                             distance_assoc_dir: pathlib.Path) -> List[pd.DataFrame]:
     """
     Collect existing results from previously completed species.
-    
+
     Args:
         actually_complete: Set of species that are actually complete
         phenos: Dictionary of phenotype information per species
-        assoc_dir: Directory for association test results
-        
+        distance_assoc_dir: Directory for distance-based association results
+
     Returns:
         List of DataFrames containing existing results
     """
     results = []
     for sp in actually_complete:
-        for var, typ, _ in phenos.get(sp, []):
-            dist_file = assoc_dir / f'{sp}__{var}.dist_assoc.tsv'
-            if dist_file.exists():
-                try:
-                    df = pd.read_csv(dist_file, sep='\t')
-                    results.append(df)
-                except Exception as e:
-                    logger.warning(f"Could not load existing results for {sp}__{var}: {e}")
+        # Load the combined distance association file for this species
+        combined_file = distance_assoc_dir / sp / f'{sp}.combined.dist_assoc.tsv'
+        if combined_file.exists():
+            try:
+                df = pd.read_csv(combined_file, sep='\t')
+                results.append(df)
+            except Exception as e:
+                logger.warning(f"Could not load existing combined results for {sp}: {e}")
     return results
 
 # ----- progress tracking -----
 
 def is_species_complete(
-    species: str, 
-    phenos: Dict[str, List[Tuple[str, str, str]]], 
-    mash_dir: pathlib.Path, 
-    assoc_dir: pathlib.Path, 
+    species: str,
+    phenos: Dict[str, List[Tuple[str, str, str]]],
+    mash_dir: pathlib.Path,
+    pyseer_dir: pathlib.Path,
+    distance_assoc_dir: pathlib.Path,
     unitig_dir: pathlib.Path
 ) -> bool:
     """
     Check if a species has been fully processed by verifying all required output files exist.
-    
+
     Args:
         species: Species name to check
         phenos: Dictionary of phenotype information per species
         mash_dir: Directory for Mash output files
-        assoc_dir: Directory for association test results
+        pyseer_dir: Directory for pyseer GWAS results
+        distance_assoc_dir: Directory for distance-based association results
         unitig_dir: Directory for unitig files
-        
+
     Returns:
         True if species is fully processed, False otherwise
     """
@@ -439,53 +444,53 @@ def is_species_complete(
     mash_file = mash_dir / species / 'mash.tsv'
     if not mash_file.exists():
         return False
-    
-    # Check unitig file  
+
+    # Check unitig file
     unitig_file = unitig_dir / species / 'uc.pyseer'
     if not unitig_file.exists():
         return False
-    
+
+    # Check distance association combined file
+    dist_combined_file = distance_assoc_dir / species / f'{species}.combined.dist_assoc.tsv'
+    if not dist_combined_file.exists():
+        return False
+
     # Check association files for all phenotypes
     for var, typ, _ in phenos.get(species, []):
-        # Check distance association file
-        dist_file = assoc_dir / f'{species}__{var}.dist_assoc.tsv'
-        if not dist_file.exists():
-            return False
-        
         # Check raw Pyseer files for binary/continuous phenotypes
         if typ in ('binary', 'continuous'):
-            raw_pyseer_file = assoc_dir / f'{species}__{var}.pyseer.tsv'
+            raw_pyseer_file = pyseer_dir / species / f'{species}__{var}.pyseer.tsv'
             if not raw_pyseer_file.exists():
                 return False
-            
+
             # Check FDR-corrected Pyseer files
-            gwas_file = assoc_dir / f'{species}__{var}.pyseer.fdr.tsv'
+            gwas_file = pyseer_dir / species / f'{species}__{var}.pyseer.fdr.tsv'
             if not gwas_file.exists():
                 return False
-    
+
     # Check pairwise files if any categorical phenotypes exist
     has_categorical = any(typ == 'categorical' for _, typ, _ in phenos.get(species, []))
     if has_categorical:
         # Check combined pairwise association file
-        pairwise_assoc_file = assoc_dir / f'{species}.pairwise_assoc.tsv'
+        pairwise_assoc_file = distance_assoc_dir / species / f'{species}.pairwise_permanova.tsv'
         if not pairwise_assoc_file.exists():
             return False
-        
+
         # Check combined pairwise Pyseer file
-        pairwise_pyseer_file = assoc_dir / f'{species}.pairwise.pyseer.tsv'
+        pairwise_pyseer_file = pyseer_dir / species / f'{species}.pairwise.pyseer.tsv'
         if not pairwise_pyseer_file.exists():
             return False
-        
+
         # Check pairwise directory exists
-        pairwise_dir = assoc_dir / species / 'pairwise'
+        pairwise_dir = pyseer_dir / species / 'pairwise'
         if not pairwise_dir.exists():
             return False
-        
+
         # Check for individual pairwise files (at least one should exist)
         pairwise_files = list(pairwise_dir.glob(f'{species}__*.pyseer.tsv'))
         if not pairwise_files:
             return False
-    
+
     return True
 
 
@@ -606,7 +611,7 @@ def _run_unitigs_for_species(species: str, sams: List[str], s2p: Dict[str, str],
 
 def _run_distance_tests(species: str, phenos: Dict[str, List[Tuple[str, str, str]]],
                        args: argparse.Namespace, mash_tsv: str,
-                       assoc_dir: pathlib.Path) -> Tuple[List[pd.DataFrame], pd.DataFrame]:
+                       distance_assoc_dir: pathlib.Path) -> Tuple[List[pd.DataFrame], pd.DataFrame]:
     """
     Run distance-based association tests for all phenotypes of a species.
 
@@ -668,10 +673,21 @@ def _run_distance_tests(species: str, phenos: Dict[str, List[Tuple[str, str, str
         if not results_df.empty:
             logger.info(f"Association testing completed for {species}: {len(results_df)} results")
 
-            # Save results
-            out_file = assoc_dir / f'{species}.dist_assoc.tsv'
-            results_df.to_csv(out_file, sep='\t', index=False)
-            logger.info(f"Distance association results saved to: {out_file}")
+            # Create species-specific directory
+            sp_dist_dir = distance_assoc_dir / species
+            sp_dist_dir.mkdir(parents=True, exist_ok=True)
+
+            # Save combined results file
+            combined_file = sp_dist_dir / f'{species}.combined.dist_assoc.tsv'
+            results_df.to_csv(combined_file, sep='\t', index=False)
+            logger.info(f"Distance association results saved to: {combined_file}")
+
+            # Save individual per-variable files as well for easier inspection
+            for var, typ, _ in phenotypes:
+                var_results = results_df[results_df['metadata'] == var]
+                if not var_results.empty:
+                    var_file = sp_dist_dir / f'{species}__{var}.dist_assoc.tsv'
+                    var_results.to_csv(var_file, sep='\t', index=False)
 
             # Convert to list of row DataFrames for backward compatibility
             rows = [pd.DataFrame([row.to_dict()]) for _, row in results_df.iterrows()]
@@ -687,7 +703,7 @@ def _run_distance_tests(species: str, phenos: Dict[str, List[Tuple[str, str, str
 
 def _run_pyseer_gwas(species: str, phenos: Dict[str, List[Tuple[str, str, str]]],
                     args: argparse.Namespace, uc_pyseer: str,
-                    assoc_dir: pathlib.Path) -> List[Dict[str, str]]:
+                    pyseer_dir: pathlib.Path) -> List[Dict[str, str]]:
     """
     Run Pyseer GWAS for binary/continuous phenotypes.
 
@@ -698,12 +714,16 @@ def _run_pyseer_gwas(species: str, phenos: Dict[str, List[Tuple[str, str, str]]]
     phenotypes = phenos.get(species, [])
     worker_pyseer_tracking = []
 
+    # Create species-specific pyseer directory
+    sp_pyseer_dir = pyseer_dir / species
+    sp_pyseer_dir.mkdir(parents=True, exist_ok=True)
+
     for var, typ, pheno_tsv in phenotypes:
         if typ not in ('binary', 'continuous'):
             continue
 
         logger.info(f"Running pyseer GWAS for {species}__{var} ({typ})")
-        out_fp = assoc_dir / f'{species}__{var}.pyseer.tsv'
+        out_fp = sp_pyseer_dir / f'{species}__{var}.pyseer.tsv'
 
         # Check preconditions
         can_run, precondition_reason = _check_pyseer_preconditions(pheno_tsv, min_samples=2)
@@ -744,7 +764,7 @@ def _run_pyseer_gwas(species: str, phenos: Dict[str, List[Tuple[str, str, str]]]
 
             if os.path.exists(out_fp) and os.path.getsize(out_fp) > 0:
                 logger.info(f"Pyseer completed successfully for {species}__{var}")
-                add_bh(str(out_fp), str(assoc_dir / f'{species}__{var}.pyseer.fdr.tsv'))
+                add_bh(str(out_fp), str(sp_pyseer_dir / f'{species}__{var}.pyseer.fdr.tsv'))
                 worker_pyseer_tracking.append(_track_pyseer_run(
                     species, var, 'main_phenotype', pheno_tsv, uc_pyseer, str(out_fp),
                     'completed'
@@ -784,7 +804,8 @@ def _worker(
     args: argparse.Namespace,
     phenos: Dict[str, List[Tuple[str, str, str]]],
     mash_dir: pathlib.Path,
-    assoc_dir: pathlib.Path,
+    pyseer_dir: pathlib.Path,
+    distance_assoc_dir: pathlib.Path,
     unitig_dir: pathlib.Path
 ) -> Tuple[pd.DataFrame, List[Dict[str, str]]]:
     """
@@ -809,10 +830,10 @@ def _worker(
         uc_pyseer = _run_unitigs_for_species(species, sams, s2p, args, mash_dir, unitig_dir)
 
         # Step 3: Distance-based association tests
-        rows, results_df = _run_distance_tests(species, phenos, args, mash_tsv, assoc_dir)
+        rows, results_df = _run_distance_tests(species, phenos, args, mash_tsv, distance_assoc_dir)
 
         # Step 4: Pyseer GWAS for binary/continuous phenotypes
-        pyseer_tracking = _run_pyseer_gwas(species, phenos, args, uc_pyseer, assoc_dir)
+        pyseer_tracking = _run_pyseer_gwas(species, phenos, args, uc_pyseer, pyseer_dir)
         worker_pyseer_tracking.extend(pyseer_tracking)
 
         # Step 5: Pairwise testing for categorical phenotypes with significant global association
@@ -828,9 +849,11 @@ def _worker(
             if not sig_cat.empty:
                 # Initialize DM in this process so we can reuse the exact test function
                 _assoc_init_worker(str(mash_tsv))
-                # Create species-specific pairwise directory
-                pair_dir = assoc_dir / species / 'pairwise'
-                pair_dir.mkdir(parents=True, exist_ok=True)
+                # Create species-specific pairwise directories
+                pair_pyseer_dir = pyseer_dir / species / 'pairwise'
+                pair_pyseer_dir.mkdir(parents=True, exist_ok=True)
+                pair_dist_dir = distance_assoc_dir / species
+                pair_dist_dir.mkdir(parents=True, exist_ok=True)
                 pairwise_outputs = []
                 pairwise_results = []  # Store pairwise PERMANOVA results
                 phenotypes = phenos.get(species, [])
@@ -852,7 +875,7 @@ def _worker(
                         n_rest = int((ph_bin['phenotype'] == 0).sum())
                         if n_g < args.pair_min_n or n_rest < args.pair_min_n:
                             continue
-                        tmp = pair_dir / f"{species}__{var}__{g}_vs_rest.binary.tsv"
+                        tmp = pair_pyseer_dir / f"{species}__{var}__{g}_vs_rest.binary.tsv"
                         ph_bin[['sample','phenotype']].to_csv(tmp, sep='\t', index=False)
                         res = _assoc_permutation_test(str(tmp), 'binary', perms=args.perms, mode=args.perm_mode)
                         # Store pairwise PERMANOVA result
@@ -868,7 +891,7 @@ def _worker(
                             # Run pyseer if sufficiently large groups
                             if n_g >= args.pair_pyseer_min_n and n_rest >= args.pair_pyseer_min_n:
                                 import subprocess
-                                out_fp = pair_dir / f"{species}__{var}__{g}_vs_rest.pyseer.tsv"
+                                out_fp = pair_pyseer_dir / f"{species}__{var}__{g}_vs_rest.pyseer.tsv"
                                 
                                 # Check preconditions for pairwise Pyseer
                                 can_run, precondition_reason = _check_pyseer_preconditions(str(tmp), min_samples=2)
@@ -936,7 +959,7 @@ def _worker(
                                 skip_reason = f"Insufficient samples for Pyseer (n_g={n_g}, n_rest={n_rest}, min_required={args.pair_pyseer_min_n})"
                                 logger.info(f"Pairwise Pyseer skipped for {species}__{var}__{g}_vs_rest: {skip_reason}")
                                 worker_pyseer_tracking.append(_track_pyseer_run(
-                                    species, f"{var}__{g}_vs_rest", 'pairwise', str(tmp), uc_pyseer, str(pair_dir / f"{species}__{var}__{g}_vs_rest.pyseer.tsv"),
+                                    species, f"{var}__{g}_vs_rest", 'pairwise', str(tmp), uc_pyseer, str(pair_pyseer_dir / f"{species}__{var}__{g}_vs_rest.pyseer.tsv"),
                                     'skipped', skip_reason
                                 ))
                         # Group-vs-group
@@ -949,7 +972,7 @@ def _worker(
                     n2 = int((sub['phenotype'] == 0).sum())
                     if n1 < args.pair_min_n or n2 < args.pair_min_n:
                         continue
-                    tmp = pair_dir / f"{species}__{var}__{g1}_vs_{g2}.binary.tsv"
+                    tmp = pair_pyseer_dir / f"{species}__{var}__{g1}_vs_{g2}.binary.tsv"
                     sub[['sample','phenotype']].to_csv(tmp, sep='\t', index=False)
                     res = _assoc_permutation_test(str(tmp), 'binary', perms=args.perms, mode=args.perm_mode)
                     # Store pairwise PERMANOVA result
@@ -964,7 +987,7 @@ def _worker(
                     if pd.notna(res.get('pvalue')) and res.get('pvalue') <= 0.05:
                         if n1 >= args.pair_pyseer_min_n and n2 >= args.pair_pyseer_min_n:
                             import subprocess
-                            out_fp = pair_dir / f"{species}__{var}__{g1}_vs_{g2}.pyseer.tsv"
+                            out_fp = pair_pyseer_dir / f"{species}__{var}__{g1}_vs_{g2}.pyseer.tsv"
                             
                             # Check preconditions for pairwise Pyseer
                             can_run, precondition_reason = _check_pyseer_preconditions(str(tmp), min_samples=2)
@@ -1032,15 +1055,15 @@ def _worker(
                             skip_reason = f"Insufficient samples for Pyseer (n1={n1}, n2={n2}, min_required={args.pair_pyseer_min_n})"
                             logger.info(f"Pairwise Pyseer skipped for {species}__{var}__{g1}_vs_{g2}: {skip_reason}")
                             worker_pyseer_tracking.append(_track_pyseer_run(
-                                species, f"{var}__{g1}_vs_{g2}", 'pairwise', str(tmp), uc_pyseer, str(pair_dir / f"{species}__{var}__{g1}_vs_{g2}.pyseer.tsv"),
+                                species, f"{var}__{g1}_vs_{g2}", 'pairwise', str(tmp), uc_pyseer, str(pair_pyseer_dir / f"{species}__{var}__{g1}_vs_{g2}.pyseer.tsv"),
                                 'skipped', skip_reason
                             ))
                 # Save pairwise PERMANOVA results
                 if pairwise_results:
                     pairwise_df = pd.DataFrame(pairwise_results)
-                    pairwise_file = assoc_dir / f"{species}.pairwise_assoc.tsv"
+                    pairwise_file = pair_dist_dir / f"{species}.pairwise_permanova.tsv"
                     pairwise_df.to_csv(pairwise_file, sep='\t', index=False)
-                    logger.info(f"Saved pairwise association results: {pairwise_file}")
+                    logger.info(f"Saved pairwise PERMANOVA results: {pairwise_file}")
 
                 # Combine per-species pairwise pyseer outputs
                 if pairwise_outputs:
@@ -1053,7 +1076,7 @@ def _worker(
                         except Exception:
                             pass
                     if parts:
-                        combined = assoc_dir / f"{species}.pairwise.pyseer.tsv"
+                        combined = pyseer_dir / species / f"{species}.pairwise.pyseer.tsv"
                         pd.concat(parts, ignore_index=True).to_csv(combined, sep='\t', index=False)
                         logger.info(f"Saved pairwise pyseer results: {combined}")
         except Exception as e:
@@ -1140,7 +1163,8 @@ def main() -> None:
     OUT = pathlib.Path(args.out); ensure_dir(OUT)
     work = OUT/'tmp'; ensure_dir(work)
     mash_dir = OUT/'mash_by_species'; ensure_dir(mash_dir)
-    assoc_dir = OUT/'assoc_by_species'; ensure_dir(assoc_dir)
+    pyseer_dir = OUT/'pyseer_by_species'; ensure_dir(pyseer_dir)
+    distance_assoc_dir = OUT/'distance_assoc_by_species'; ensure_dir(distance_assoc_dir)
     unitig_dir = OUT/'unitigs_by_species'; ensure_dir(unitig_dir)
     ensure_dir(OUT/'assoc')
     
@@ -1228,15 +1252,15 @@ def main() -> None:
 
     # Build species -> sample list and determine which species to process
     sp_to_samples = _build_species_sample_map(ani, s2p, args.min_n)
-    remaining_species = _get_remaining_species(sp_to_samples, args, phenos, mash_dir, assoc_dir, unitig_dir)
-    
+    remaining_species = _get_remaining_species(sp_to_samples, args, phenos, mash_dir, pyseer_dir, distance_assoc_dir, unitig_dir)
+
     # Generate comprehensive summary of all input files and their status
-    _generate_analysis_summary(phenos, sp_to_samples, remaining_species, args, assoc_dir)
+    _generate_analysis_summary(phenos, sp_to_samples, remaining_species, args, pyseer_dir, distance_assoc_dir)
 
     # Generate expected Pyseer runs list
-    expected_pyseer_runs = _generate_expected_pyseer_runs(phenos, assoc_dir)
+    expected_pyseer_runs = _generate_expected_pyseer_runs(phenos, pyseer_dir)
     logger.info(f"Generated {len(expected_pyseer_runs)} expected Pyseer runs")
-    
+
     # Write expected runs to file for reference
     expected_runs_file = OUT / 'expected_pyseer_runs.tsv'
     if expected_pyseer_runs:
@@ -1248,7 +1272,7 @@ def main() -> None:
     with ProcessPoolExecutor(max_workers=args.workers) as ex:
         futs = []
         for sp, sams in remaining_species.items():
-            futs.append(ex.submit(_worker, sp, sams, s2p, args, phenos, mash_dir, assoc_dir, unitig_dir))
+            futs.append(ex.submit(_worker, sp, sams, s2p, args, phenos, mash_dir, pyseer_dir, distance_assoc_dir, unitig_dir))
         for f in as_completed(futs):
             df, worker_tracking = f.result()
             if not df.empty:
@@ -1260,20 +1284,25 @@ def main() -> None:
         # Find completed species based on file existence
         actually_complete = set()
         for sp in sp_to_samples.keys():
-            if is_species_complete(sp, phenos, mash_dir, assoc_dir, unitig_dir):
+            if is_species_complete(sp, phenos, mash_dir, pyseer_dir, distance_assoc_dir, unitig_dir):
                 actually_complete.add(sp)
-        
-        existing_results = _collect_existing_results(actually_complete, phenos, assoc_dir)
+
+        existing_results = _collect_existing_results(actually_complete, phenos, distance_assoc_dir)
         results.extend(existing_results)
 
     if results:
-        master = OUT/'assoc'/'mash_lineage_assoc_by_species.tsv'
-        pd.concat(results, ignore_index=True).to_csv(master, sep='\t', index=False)
-        add_bh(str(master), str(OUT/'assoc'/'mash_lineage_assoc_by_species.fdr.tsv'))
-        logger.info(f"Final results written to {master}")
+        master = OUT/'assoc'/'distance_associations_all_species.tsv'
+        combined_df = pd.concat(results, ignore_index=True)
+        combined_df.to_csv(master, sep='\t', index=False)
+
+        # Apply FDR correction
+        fdr_master = OUT/'assoc'/'distance_associations_all_species.fdr.tsv'
+        add_bh(str(master), str(fdr_master))
+        logger.info(f"Final distance association results written to {master}")
+        logger.info(f"FDR-corrected results written to {fdr_master}")
     else:
         logger.info("No results to write")
-    
+
     # Write Pyseer tracking report
     if pyseer_tracking:
         tracking_report_file = OUT / 'pyseer_tracking_report.tsv'
@@ -1284,8 +1313,8 @@ def main() -> None:
     # Always summarize pyseer results
     logger.info("Summarizing pyseer results...")
     summarize_pyseer(
-        indir=str(assoc_dir),
+        indir=str(pyseer_dir),
         out=str(OUT/'assoc'/'pyseer_summary.tsv'),
         alpha=0.05,
-        pattern="*.pyseer.tsv*"
+        pattern="**/*.pyseer.tsv"
     )

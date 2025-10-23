@@ -13,7 +13,7 @@ if str(SRC_DIR) not in sys.path:
 
 from panpiper_kit.cli import (
     _build_species_sample_map, _get_remaining_species, _collect_existing_results,
-    is_species_complete, log_progress, load_completed_species,
+    is_species_complete,
     are_phenotype_files_complete, load_phenotype_manifest
 )
 
@@ -84,10 +84,11 @@ def test_get_remaining_species_no_resume():
     # Mock other parameters
     phenos = {}
     mash_dir = pathlib.Path('/tmp/mash')
-    assoc_dir = pathlib.Path('/tmp/assoc')
+    pyseer_dir = pathlib.Path('/tmp/pyseer')
+    distance_assoc_dir = pathlib.Path('/tmp/distance_assoc')
     unitig_dir = pathlib.Path('/tmp/unitig')
 
-    result = _get_remaining_species(sp_to_samples, args, phenos, mash_dir, assoc_dir, unitig_dir)
+    result = _get_remaining_species(sp_to_samples, args, phenos, mash_dir, pyseer_dir, distance_assoc_dir, unitig_dir)
 
     # Should return all species when not resuming
     assert result == sp_to_samples
@@ -103,73 +104,30 @@ def test_get_remaining_species_force():
 
     phenos = {}
     mash_dir = pathlib.Path('/tmp/mash')
-    assoc_dir = pathlib.Path('/tmp/assoc')
+    pyseer_dir = pathlib.Path('/tmp/pyseer')
+    distance_assoc_dir = pathlib.Path('/tmp/distance_assoc')
     unitig_dir = pathlib.Path('/tmp/unitig')
 
-    result = _get_remaining_species(sp_to_samples, args, phenos, mash_dir, assoc_dir, unitig_dir)
+    result = _get_remaining_species(sp_to_samples, args, phenos, mash_dir, pyseer_dir, distance_assoc_dir, unitig_dir)
 
     # Should return all species when forcing
     assert result == sp_to_samples
 
 
-def test_log_progress():
-    """Test log_progress function."""
-    with tempfile.NamedTemporaryFile(mode='w', delete=False) as log_file:
-        log_path = log_file.name
-    
-    try:
-        log_progress('test_species', 'started', pathlib.Path(log_path))
-        log_progress('test_species', 'completed', pathlib.Path(log_path))
-        
-        # Check log file contents
-        with open(log_path, 'r') as f:
-            lines = f.readlines()
-        
-        assert len(lines) == 2
-        assert 'test_species' in lines[0]
-        assert 'started' in lines[0]
-        assert 'test_species' in lines[1]
-        assert 'completed' in lines[1]
-    
-    finally:
-        import os
-        os.unlink(log_path)
+# NOTE: log_progress and load_completed_species functions have been removed
+# Tests commented out as these functions are no longer part of the codebase
 
+# def test_log_progress():
+#     """Test log_progress function."""
+#     pass
 
-def test_load_completed_species():
-    """Test load_completed_species function."""
-    with tempfile.NamedTemporaryFile(mode='w', delete=False) as log_file:
-        # Write test log entries
-        log_file.write('2023-01-01T10:00:00\tspecies1\tcompleted\n')
-        log_file.write('2023-01-01T10:01:00\tspecies2\tstarted\n')
-        log_file.write('2023-01-01T10:02:00\tspecies2\tcompleted\n')
-        log_file.write('2023-01-01T10:03:00\tspecies3\tfailed\n')
-        log_path = log_file.name
-    
-    try:
-        completed = load_completed_species(pathlib.Path(log_path))
-        
-        assert 'species1' in completed
-        assert 'species2' in completed
-        assert 'species3' not in completed  # failed, not completed
-    
-    finally:
-        import os
-        os.unlink(log_path)
+# def test_load_completed_species():
+#     """Test load_completed_species function."""
+#     pass
 
-
-def test_load_completed_species_empty():
-    """Test load_completed_species with empty file."""
-    with tempfile.NamedTemporaryFile(mode='w', delete=False) as log_file:
-        log_path = log_file.name
-    
-    try:
-        completed = load_completed_species(pathlib.Path(log_path))
-        assert completed == set()
-    
-    finally:
-        import os
-        os.unlink(log_path)
+# def test_load_completed_species_empty():
+#     """Test load_completed_species with empty file."""
+#     pass
 
 
 def test_are_phenotype_files_complete():
@@ -247,14 +205,16 @@ def test_is_species_complete():
     """Test is_species_complete function."""
     with tempfile.TemporaryDirectory() as tmpdir:
         mash_dir = pathlib.Path(tmpdir) / 'mash'
-        assoc_dir = pathlib.Path(tmpdir) / 'assoc'
+        pyseer_dir = pathlib.Path(tmpdir) / 'pyseer'
+        distance_assoc_dir = pathlib.Path(tmpdir) / 'distance_assoc'
         unitig_dir = pathlib.Path(tmpdir) / 'unitig'
-        
+
         # Create required directories
         mash_dir.mkdir()
-        assoc_dir.mkdir()
+        pyseer_dir.mkdir()
+        distance_assoc_dir.mkdir()
         unitig_dir.mkdir()
-        
+
         species = 'test_species'
         phenos = {
             species: [
@@ -262,21 +222,27 @@ def test_is_species_complete():
                 ('var2', 'continuous', '/path/to/var2.pheno.tsv')
             ]
         }
-        
+
         # Test incomplete case (missing files)
-        assert is_species_complete(species, phenos, mash_dir, assoc_dir, unitig_dir) == False
-        
-        # Create required files
+        assert is_species_complete(species, phenos, mash_dir, pyseer_dir, distance_assoc_dir, unitig_dir) == False
+
+        # Create required files in new structure
         (mash_dir / species).mkdir()
         (mash_dir / species / 'mash.tsv').touch()
-        
+
         (unitig_dir / species).mkdir()
         (unitig_dir / species / 'uc.pyseer').touch()
-        
-        (assoc_dir / f'{species}__var1.dist_assoc.tsv').touch()
-        (assoc_dir / f'{species}__var2.dist_assoc.tsv').touch()
-        (assoc_dir / f'{species}__var1.pyseer.fdr.tsv').touch()
-        (assoc_dir / f'{species}__var2.pyseer.fdr.tsv').touch()
-        
+
+        # Distance association combined file
+        (distance_assoc_dir / species).mkdir()
+        (distance_assoc_dir / species / f'{species}.combined.dist_assoc.tsv').touch()
+
+        # Pyseer files per species subdirectory
+        (pyseer_dir / species).mkdir()
+        (pyseer_dir / species / f'{species}__var1.pyseer.tsv').touch()
+        (pyseer_dir / species / f'{species}__var1.pyseer.fdr.tsv').touch()
+        (pyseer_dir / species / f'{species}__var2.pyseer.tsv').touch()
+        (pyseer_dir / species / f'{species}__var2.pyseer.fdr.tsv').touch()
+
         # Test complete case
-        assert is_species_complete(species, phenos, mash_dir, assoc_dir, unitig_dir) == True
+        assert is_species_complete(species, phenos, mash_dir, pyseer_dir, distance_assoc_dir, unitig_dir) == True
