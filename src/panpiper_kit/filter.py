@@ -277,9 +277,13 @@ def _process_species_phenotypes(
     # Optional substring filter on variable (column) name
     if phenotype_filter:
         pf = phenotype_filter.lower()
+        usable_cols_before = len(usable_cols)
         usable_cols = [c for c in usable_cols if pf in str(c).lower()]
+        if len(usable_cols) < usable_cols_before:
+            logger.debug(f"  {species}: Phenotype filter '{phenotype_filter}' kept {len(usable_cols)}/{usable_cols_before} columns")
     
     if not usable_cols:
+        logger.debug(f"  {species}: No usable phenotype columns after filtering (excluded: {exclude_cols}, available: {list(sub.columns)[:5]}...)")
         return []
     
     # Numerical summary for this species
@@ -288,7 +292,7 @@ def _process_species_phenotypes(
         mh_nonnull = mh_vals.notna().sum()
         mh_unique = mh_vals.dropna().nunique() if mh_nonnull > 0 else 0
         mh_counts = mh_vals.dropna().value_counts().to_dict() if mh_nonnull > 0 else {}
-        logger.debug(f"  {species}: Metabolic_health n={mh_nonnull}/{len(sub)}, nunique={mh_unique}, counts={mh_counts}")
+        logger.info(f"  {species}: Metabolic_health n={mh_nonnull}/{len(sub)}, nunique={mh_unique}, counts={mh_counts}")
 
     summary_records = []
 
