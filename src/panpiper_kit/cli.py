@@ -564,6 +564,35 @@ def load_phenotype_manifest(phenos_dir: pathlib.Path) -> Dict[str, List[Tuple[st
     return phenos
 
 
+def has_passing_phenotypes(species: str, phenos_dir: pathlib.Path) -> bool:
+    """
+    Check if a species has any phenotypes that passed filters by reading the phenotype summary file.
+    
+    Args:
+        species: Species name to check
+        phenos_dir: Directory containing phenotype summary files
+        
+    Returns:
+        True if at least one phenotype passed filters, False otherwise
+    """
+    summary_file = phenos_dir / f"{species}.pheno_summary.tsv"
+    if not summary_file.exists():
+        return False
+    
+    try:
+        df = pd.read_csv(summary_file, sep='\t')
+        if df.empty:
+            return False
+        # Check if any phenotype has passes_filters == True
+        if 'passes_filters' in df.columns:
+            return df['passes_filters'].any()
+        # If column doesn't exist, assume no phenotypes passed (old format)
+        return False
+    except Exception as e:
+        logger.warning(f"Could not read phenotype summary for {species}: {e}")
+        return False
+
+
 
 # ----- worker helper functions -----
 
@@ -806,7 +835,8 @@ def _worker(
     mash_dir: pathlib.Path,
     pyseer_dir: pathlib.Path,
     distance_assoc_dir: pathlib.Path,
-    unitig_dir: pathlib.Path
+    unitig_dir: pathlib.Path,
+    phenos_dir: pathlib.Path
 ) -> Tuple[pd.DataFrame, List[Dict[str, str]]]:
     """
     Worker function for parallel processing of species-specific analyses.
@@ -815,8 +845,15 @@ def _worker(
     """
     logger.info(f"Starting processing for species: {species}")
 
-    if species not in phenos:
-        logger.warning(f"No phenotypes found for species {species}")
+    # Check if species has any valid phenotypes
+    species_phenos = phenos.get(species, [])
+    if not species_phenos:
+        logger.warning(f"No phenotypes found for species {species} - skipping mash/unitig")
+        return pd.DataFrame(columns=['species','metadata','test','stat','pvalue','n_samples']), []
+    
+    # Check if any phenotypes actually passed filters by reading the summary file
+    if not has_passing_phenotypes(species, phenos_dir):
+        logger.warning(f"No passing phenotypes found for species {species} - skipping mash/unitig")
         return pd.DataFrame(columns=['species','metadata','test','stat','pvalue','n_samples']), []
 
     # Initialize Pyseer tracking for this worker
@@ -891,6 +928,7 @@ def _worker(
                             # Run pyseer if sufficiently large groups
                             if n_g >= args.pair_pyseer_min_n and n_rest >= args.pair_pyseer_min_n:
                                 import subprocess
+                                t = max(1, args.threads_per_worker)
                                 out_fp = pair_pyseer_dir / f"{species}__{var}__{g}_vs_rest.pyseer.tsv"
                                 
                                 # Check preconditions for pairwise Pyseer
@@ -987,6 +1025,7 @@ def _worker(
                     if pd.notna(res.get('pvalue')) and res.get('pvalue') <= 0.05:
                         if n1 >= args.pair_pyseer_min_n and n2 >= args.pair_pyseer_min_n:
                             import subprocess
+                            t = max(1, args.threads_per_worker)
                             out_fp = pair_pyseer_dir / f"{species}__{var}__{g1}_vs_{g2}.pyseer.tsv"
                             
                             # Check preconditions for pairwise Pyseer
@@ -1253,6 +1292,16 @@ def main() -> None:
     # Build species -> sample list and determine which species to process
     sp_to_samples = _build_species_sample_map(ani, s2p, args.min_n)
     remaining_species = _get_remaining_species(sp_to_samples, args, phenos, mash_dir, pyseer_dir, distance_assoc_dir, unitig_dir)
+    
+    # Filter out species with no valid phenotypes
+    species_with_valid_phenos = {
+        sp: sams for sp, sams in remaining_species.items()
+        if sp in phenos and len(phenos[sp]) > 0 and has_passing_phenotypes(sp, phenos_dir)
+    }
+    if len(species_with_valid_phenos) < len(remaining_species):
+        skipped = len(remaining_species) - len(species_with_valid_phenos)
+        logger.info(f"Skipping {skipped} species with no passing phenotypes")
+    remaining_species = species_with_valid_phenos
 
     # Generate comprehensive summary of all input files and their status
     _generate_analysis_summary(phenos, sp_to_samples, remaining_species, args, pyseer_dir, distance_assoc_dir)
@@ -1272,7 +1321,7 @@ def main() -> None:
     with ProcessPoolExecutor(max_workers=args.workers) as ex:
         futs = []
         for sp, sams in remaining_species.items():
-            futs.append(ex.submit(_worker, sp, sams, s2p, args, phenos, mash_dir, pyseer_dir, distance_assoc_dir, unitig_dir))
+            futs.append(ex.submit(_worker, sp, sams, s2p, args, phenos, mash_dir, pyseer_dir, distance_assoc_dir, unitig_dir, phenos_dir))
         for f in as_completed(futs):
             df, worker_tracking = f.result()
             if not df.empty:

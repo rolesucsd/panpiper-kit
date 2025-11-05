@@ -1,11 +1,14 @@
 import os
 import re
 import pathlib
+import logging
 from typing import Dict, List, Tuple, Optional
 
 import pandas as pd
 import numpy as np
 import json
+
+logger = logging.getLogger(__name__)
 
 # Constants for phenotype filtering
 DEFAULT_MIN_N = 6
@@ -460,11 +463,14 @@ def filter_metadata_per_species(
         )
         out_index[species] = rows
 
-        # manifest (unchanged)
-        idxp = pathlib.Path(out_dir) / f"{species}.list.tsv"
-        with open(idxp, 'w') as fh:
-            fh.write('species\tvariable\ttype\tpheno_tsv\n')
-            for (v, t, pth) in rows:
-                fh.write(f"{species}\t{v}\t{t}\t{pth}\n")
+        # manifest - only write if there are valid phenotypes
+        if rows:
+            idxp = pathlib.Path(out_dir) / f"{species}.list.tsv"
+            with open(idxp, 'w') as fh:
+                fh.write('species\tvariable\ttype\tpheno_tsv\n')
+                for (v, t, pth) in rows:
+                    fh.write(f"{species}\t{v}\t{t}\t{pth}\n")
+        else:
+            logger.warning(f"No passing phenotypes for species {species} - skipping .list.tsv creation")
 
     return out_index
