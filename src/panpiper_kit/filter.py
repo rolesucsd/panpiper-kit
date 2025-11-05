@@ -505,6 +505,24 @@ def filter_metadata_per_species(
         logger.warning(f"  Sample metadata {sample_col} values: {list(meta[sample_col].head(10))}")
         return {}
     
+    # Debug: Show sample data after merge
+    logger.info("  Sample merged data (first 5 rows):")
+    exclude_cols_debug = {'species', 'bin_identifier', 'patient', sample_col}
+    phenotype_cols = [c for c in df.columns if c not in exclude_cols_debug]
+    logger.info(f"  Available phenotype columns: {phenotype_cols}")
+    
+    for idx, row in df.head(5).iterrows():
+        logger.info(f"    Row {idx}:")
+        logger.info(f"      patient: {row.get('patient', 'N/A')}")
+        logger.info(f"      sampleid: {row.get(sample_col, 'N/A')}")
+        logger.info(f"      species: {row.get('species', 'N/A')}")
+        logger.info(f"      bin_identifier: {row.get('bin_identifier', 'N/A')}")
+        for col in phenotype_cols[:5]:  # Show first 5 phenotype columns
+            val = row.get(col, 'N/A')
+            logger.info(f"      {col}: {val}")
+        if len(phenotype_cols) > 5:
+            logger.info(f"      ... and {len(phenotype_cols) - 5} more phenotype columns")
+    
     # Show merge statistics per species
     species_counts = df.groupby('species').size()
     logger.info(f"  Species counts after merge:")
@@ -512,6 +530,22 @@ def filter_metadata_per_species(
         logger.info(f"    {sp}: {count} samples")
     if len(species_counts) > 10:
         logger.info(f"    ... and {len(species_counts) - 10} more species")
+    
+    # Debug: Show phenotype data availability per species
+    logger.info("  Checking phenotype data availability per species (first 5 species):")
+    for species, sub in list(df.groupby('species', sort=False))[:5]:
+        exclude_cols_sub = {'species', 'bin_identifier', 'patient', sample_col}
+        usable_cols_sub = [c for c in sub.columns if c not in exclude_cols_sub]
+        logger.info(f"    Species: {species}")
+        logger.info(f"      Samples: {len(sub)}")
+        logger.info(f"      Phenotype columns: {len(usable_cols_sub)}")
+        for col in usable_cols_sub[:3]:  # Show first 3 columns
+            non_null = sub[col].notna().sum()
+            unique_vals = sub[col].dropna().nunique() if non_null > 0 else 0
+            sample_vals = sub[col].dropna().head(3).tolist() if non_null > 0 else []
+            logger.info(f"        {col}: {non_null}/{len(sub)} non-null, {unique_vals} unique values, sample: {sample_vals}")
+        if len(usable_cols_sub) > 3:
+            logger.info(f"        ... and {len(usable_cols_sub) - 3} more columns")
 
     out_index: Dict[str, List[Tuple[str, str, str]]] = {}
     species_with_passing = []
