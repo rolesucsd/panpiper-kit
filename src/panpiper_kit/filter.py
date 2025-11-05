@@ -273,13 +273,17 @@ def _process_species_phenotypes(
     rows: List[Tuple[str, str, str]] = []
     exclude_cols = {'species', 'bin_identifier', 'patient', sample_col}
     usable_cols = [c for c in sub.columns if c not in exclude_cols]
-    
+    logger.info(f"  {species}: All columns after exclusion: {usable_cols[:10]}{'...' if len(usable_cols) > 10 else ''}")
+
     # Optional substring filter on variable (column) name
     if phenotype_filter:
         pf = phenotype_filter.lower()
+        usable_cols_before = usable_cols.copy()
         usable_cols = [c for c in usable_cols if pf in str(c).lower()]
-    
+        logger.info(f"  {species}: Phenotype filter '{phenotype_filter}' kept {len(usable_cols)}/{len(usable_cols_before)} columns: {usable_cols}")
+
     if not usable_cols:
+        logger.info(f"  {species}: No usable columns after filtering")
         return []
     
     # Numerical summary for this species
@@ -288,7 +292,7 @@ def _process_species_phenotypes(
         mh_nonnull = mh_vals.notna().sum()
         mh_unique = mh_vals.dropna().nunique() if mh_nonnull > 0 else 0
         mh_counts = mh_vals.dropna().value_counts().to_dict() if mh_nonnull > 0 else {}
-        logger.debug(f"  {species}: Metabolic_health n={mh_nonnull}/{len(sub)}, nunique={mh_unique}, counts={mh_counts}")
+        logger.info(f"  {species}: Metabolic_health n={mh_nonnull}/{len(sub)}, nunique={mh_unique}, counts={mh_counts}")
 
     summary_records = []
 
