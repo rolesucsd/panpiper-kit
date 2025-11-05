@@ -347,14 +347,23 @@ def _process_species_phenotypes(
         if typ in ("binary", "categorical"):
             # Normalize binary values to 0/1 and drop ambiguous values
             if typ == "binary":
-                val_str = s_nonnull[col].astype(str).str.strip().str.lower()
-                true_like = {"true", "t", "yes", "y", "1"}
-                false_like = {"false", "f", "no", "n", "0"}
-                mapped = pd.Series(pd.NA, index=val_str.index)
-                mapped[val_str.isin(true_like)] = 1
-                mapped[val_str.isin(false_like)] = 0
-                # Replace original values with mapped 0/1 and drop NAs (ambiguous)
-                s_nonnull[col] = mapped
+                # If there are exactly two unique non-null values but they are not boolean-like,
+                # map deterministically to {0,1} by sorted label order
+                raw_nonnull = s_nonnull[col].dropna()
+                unique_vals = sorted(pd.unique(raw_nonnull.astype(str).str.strip()))
+                if len(unique_vals) == 2:
+                    label_to_int = {unique_vals[0]: 0, unique_vals[1]: 1}
+                    s_nonnull[col] = raw_nonnull.astype(str).str.strip().map(label_to_int)
+                else:
+                    # fallback to boolean-like mapping
+                    val_str = s_nonnull[col].astype(str).str.strip().str.lower()
+                    true_like = {"true", "t", "yes", "y", "1"}
+                    false_like = {"false", "f", "no", "n", "0"}
+                    mapped = pd.Series(pd.NA, index=val_str.index)
+                    mapped[val_str.isin(true_like)] = 1
+                    mapped[val_str.isin(false_like)] = 0
+                    s_nonnull[col] = mapped
+                # Drop rows that could not be mapped
                 s_nonnull = s_nonnull.dropna(subset=[col])
 
             vc = s_nonnull[col].astype(str).value_counts().sort_index()
