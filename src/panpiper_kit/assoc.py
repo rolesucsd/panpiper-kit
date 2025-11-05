@@ -632,23 +632,29 @@ def run_assoc(
                 res.update({"species": sp, "metadata": var, "type": typ, "pheno_tsv": pth})
                 exact_rows.append(res)
     exact_df = pd.DataFrame(exact_rows)
+    
+    # Debug logging
+    if not exact_df.empty:
+        logger.debug(f"exact_df shape: {exact_df.shape}, columns: {list(exact_df.columns)}")
 
     # --- merge & return ---
-    # Ensure consistent keys for merge: prefer 'species' column
-    if not exact_df.empty:
-        # If exact_df contains prefixed keys after add_prefix, ensure species key exists
-        pref = exact_df.add_prefix("exact_")
-        # Backward-compat: if exact_species is missing but exact_species/metadata exist differently
-        if "exact_species" not in pref.columns and "species" in exact_df.columns:
-            pref = pref.rename(columns={"species": "exact_species"})
-        if "exact_metadata" not in pref.columns and "metadata" in exact_df.columns:
-            pref = pref.rename(columns={"metadata": "exact_metadata"})
-        if "exact_type" not in pref.columns and "type" in exact_df.columns:
-            pref = pref.rename(columns={"type": "exact_type"})
-        if "exact_pheno_tsv" not in pref.columns and "pheno_tsv" in exact_df.columns:
-            pref = pref.rename(columns={"pheno_tsv": "exact_pheno_tsv"})
+    # Prefix exact_df columns for merge
+    if exact_df.empty:
+        # Create empty DataFrame with expected prefixed columns
+        logger.debug("exact_df is empty, creating empty pref with expected columns")
+        pref = pd.DataFrame(columns=["exact_species", "exact_metadata", "exact_type", "exact_pheno_tsv"])
     else:
-        pref = exact_df.add_prefix("exact_")
+        # Ensure exact_df has the required merge keys
+        required_cols = ["species", "metadata", "type", "pheno_tsv"]
+        missing_cols = [c for c in required_cols if c not in exact_df.columns]
+        if missing_cols:
+            logger.error(f"exact_df missing required columns: {missing_cols}. Available: {list(exact_df.columns)}")
+            logger.error(f"exact_rows sample (first 2): {exact_rows[:2] if exact_rows else '[]'}")
+            # Create empty DataFrame with expected prefixed columns
+            pref = pd.DataFrame(columns=["exact_species", "exact_metadata", "exact_type", "exact_pheno_tsv"])
+        else:
+            pref = exact_df.add_prefix("exact_")
+            logger.debug(f"pref shape after add_prefix: {pref.shape}, columns: {list(pref.columns)}")
 
     out = fast_df.merge(
         pref,
