@@ -1143,9 +1143,9 @@ def main() -> None:
     ap.add_argument('--max-missing-frac', type=float, default=DEFAULT_MAX_MISSING_FRAC, help='max fraction of missing values allowed for a phenotype')
     ap.add_argument('--min-level-n', type=int, default=DEFAULT_MIN_LEVEL_N, help='min samples required per category level')
     ap.add_argument('--min-unique-cont', type=int, default=DEFAULT_MIN_UNIQUE_CONT, help='min unique values required for continuous phenotypes')
-    ap.add_argument('--resume', action='store_true', default=True, 
+    ap.add_argument('--resume', action='store_true', default=False, 
                     help='Resume from previous run (skip completed species)')
-    ap.add_argument('--force', action='store_true', default=False,
+    ap.add_argument('--force', action='store_true', default=True,
                     help='Force re-run all species (ignore existing files)')
     ap.add_argument('--missing-values', nargs='*', default=None,
                     help='Additional missing value indicators to treat as NaN (space-separated)')
