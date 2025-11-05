@@ -270,31 +270,21 @@ def _process_species_phenotypes(
     Also writes a comprehensive per-variable summary TSV:
       <out_dir>/<species>.pheno_summary.tsv
     """
-    logger.debug(f"  _process_species_phenotypes for {species}: {len(sub)} samples")
-    logger.debug(f"    Columns in data: {list(sub.columns)}")
-    
     rows: List[Tuple[str, str, str]] = []
     exclude_cols = {'species', 'bin_identifier', 'patient', sample_col}
     usable_cols = [c for c in sub.columns if c not in exclude_cols]
-    logger.debug(f"    Excluded columns: {exclude_cols}")
-    logger.debug(f"    Usable columns (before filter): {usable_cols}")
     
     # Optional substring filter on variable (column) name
     if phenotype_filter:
         pf = phenotype_filter.lower()
         usable_cols = [c for c in usable_cols if pf in str(c).lower()]
-        logger.debug(f"    After phenotype_filter '{phenotype_filter}': {usable_cols}")
     
     if not usable_cols:
-        logger.warning(f"    No usable columns found for species {species}")
         return []
-
-    logger.debug(f"    Processing {len(usable_cols)} phenotype columns")
 
     summary_records = []
 
     for col in usable_cols:
-        logger.debug(f"    Processing column: {col}")
         rec = {
             "species": species,
             "variable": col,
@@ -319,10 +309,6 @@ def _process_species_phenotypes(
         s = sub[['bin_identifier', col]].copy()
         typ = _classify(s[col], min_unique_cont)
         rec["type"] = typ
-        logger.debug(f"      Classified as: {typ}")
-        logger.debug(f"      Non-null values: {s[col].notna().sum()}/{len(s)}")
-        if s[col].notna().any():
-            logger.debug(f"      Sample values: {s[col].dropna().head(5).tolist()}")
 
         # If continuous, (optionally) filter outliers -> set to NaN
         if typ == "continuous":
@@ -343,7 +329,6 @@ def _process_species_phenotypes(
         # Early missing-fraction fail
         if rec["missing_frac"] > max_missing_frac:
             rec["fail_reason"] = f"missing_frac>{max_missing_frac}"
-            logger.debug(f"      FAILED: {rec['fail_reason']} (missing_frac={rec['missing_frac']:.3f})")
             summary_records.append(rec)
             continue
 
@@ -370,40 +355,29 @@ def _process_species_phenotypes(
 
             # For binary, both levels must have >= min_level_n and overall N >= min_n
             if typ == "binary":
-                logger.debug(f"      Binary levels: {vc.to_dict()}")
-                logger.debug(f"      Level counts: min={vc.min()}, need >= {min_level_n}")
-                logger.debug(f"      Total N: {len(s_nonnull)}, need >= {min_n}")
                 if (len(vc) != 2) or (vc.min() < min_level_n) or (len(s_nonnull) < min_n):
                     rec["fail_reason"] = "insufficient per-level counts or total N for binary"
-                    logger.debug(f"      FAILED: {rec['fail_reason']} (levels={len(vc)}, min_level={vc.min()}, total_N={len(s_nonnull)})")
                     summary_records.append(rec)
                     continue
 
             # For categorical, drop levels < min_level_n then require >=2 levels and N>=min_n
             if typ == "categorical":
-                logger.debug(f"      Categorical levels: {vc.to_dict()}")
                 keep_levels = vc[vc >= min_level_n].index
-                logger.debug(f"      Keeping levels with >= {min_level_n} samples: {list(keep_levels)}")
                 s_nonnull = s_nonnull[s_nonnull[col].astype(str).isin(keep_levels)]
                 rec["n_kept_after_level_filter"] = int(len(s_nonnull))
                 vc2 = s_nonnull[col].astype(str).value_counts().sort_index()
                 # refresh counts after pruning
                 rec["n_levels"] = int(len(vc2))
                 rec["level_counts_json"] = json.dumps(vc2.to_dict())
-                logger.debug(f"      After pruning: {len(vc2)} levels, {len(s_nonnull)} samples")
                 if len(vc2) < 2 or len(s_nonnull) < min_n:
                     rec["fail_reason"] = "insufficient levels or total N after pruning"
-                    logger.debug(f"      FAILED: {rec['fail_reason']} (levels={len(vc2)}, total_N={len(s_nonnull)})")
                     summary_records.append(rec)
                     continue
 
         else:  # continuous
             s_vals = _series_numeric_coerce(s_nonnull[col])
-            logger.debug(f"      Continuous: nunique={s_vals.nunique()}, need >= {min_unique_cont}")
-            logger.debug(f"      Total N: {len(s_vals)}, need >= {min_n}")
             if s_vals.nunique() < min_unique_cont or len(s_vals) < min_n:
                 rec["fail_reason"] = "insufficient unique values or total N for continuous"
-                logger.debug(f"      FAILED: {rec['fail_reason']} (nunique={s_vals.nunique()}, total_N={len(s_vals)})")
                 summary_records.append(rec)
                 continue
             mu = s_vals.mean()
@@ -415,7 +389,6 @@ def _process_species_phenotypes(
 
         # If we got here, it passes type-specific checks
         rec["passes_filters"] = True
-        logger.debug(f"      PASSED: Creating phenotype file for {col} ({typ})")
 
         # Write the phenotype file (binary/categorical may be pruned)
         if typ == "categorical":
@@ -439,15 +412,12 @@ def _process_species_phenotypes(
     sum_df = pd.DataFrame.from_records(summary_records)
     sum_p = pathlib.Path(out_dir) / f"{species}.pheno_summary.tsv"
     sum_df.to_csv(sum_p, sep="\t", index=False)
-    logger.debug(f"    Wrote summary: {sum_p}")
     
-    # Log summary statistics
-    passing = sum_df['passes_filters'].sum() if 'passes_filters' in sum_df.columns else 0
-    logger.info(f"    Summary: {passing}/{len(sum_df)} phenotypes passed filters")
-    if passing == 0 and len(sum_df) > 0:
-        logger.warning(f"    All phenotypes failed! Reasons:")
-        for _, row in sum_df.iterrows():
-            logger.warning(f"      {row['variable']} ({row['type']}): {row.get('fail_reason', 'unknown')}")
+    # Verify rows match what's in summary
+    passing_in_summary = sum_df['passes_filters'].sum() if 'passes_filters' in sum_df.columns else 0
+    if len(rows) != passing_in_summary:
+        logger.warning(f"  MISMATCH for {species}: {len(rows)} rows returned but {passing_in_summary} marked as passing in summary")
+        logger.warning(f"    This might indicate a bug in phenotype file creation")
 
     return rows
 
@@ -544,8 +514,10 @@ def filter_metadata_per_species(
         logger.info(f"    ... and {len(species_counts) - 10} more species")
 
     out_index: Dict[str, List[Tuple[str, str, str]]] = {}
+    species_with_passing = []
+    species_with_failing = []
+    
     for species, sub in df.groupby('species', sort=False):
-        logger.info(f"Processing species: {species} ({len(sub)} samples)")
         rows = _process_species_phenotypes(
             sub=sub,
             species=species,
@@ -559,21 +531,59 @@ def filter_metadata_per_species(
             phenotype_filter=phenotype_filter,
         )
         out_index[species] = rows
-        logger.info(f"  Result: {len(rows)} passing phenotypes")
 
         # manifest - only write if there are valid phenotypes
         if rows:
             idxp = pathlib.Path(out_dir) / f"{species}.list.tsv"
-            with open(idxp, 'w') as fh:
-                fh.write('species\tvariable\ttype\tpheno_tsv\n')
-                for (v, t, pth) in rows:
-                    fh.write(f"{species}\t{v}\t{t}\t{pth}\n")
-            logger.info(f"  Created manifest: {idxp}")
+            logger.debug(f"Creating list file for {species}: {idxp}")
+            logger.debug(f"  Will write {len(rows)} phenotype entries")
+            try:
+                with open(idxp, 'w') as fh:
+                    fh.write('species\tvariable\ttype\tpheno_tsv\n')
+                    for (v, t, pth) in rows:
+                        fh.write(f"{species}\t{v}\t{t}\t{pth}\n")
+                        logger.debug(f"    Added: {v} ({t}) -> {pth}")
+                if idxp.exists():
+                    logger.debug(f"  Successfully created: {idxp}")
+                    species_with_passing.append(species)
+                else:
+                    logger.error(f"  ERROR: List file was not created at {idxp}")
+            except Exception as e:
+                logger.error(f"  ERROR creating list file for {species}: {e}")
         else:
-            logger.warning(f"  No passing phenotypes for species {species} - skipping .list.tsv creation")
+            species_with_failing.append(species)
 
     logger.info("=" * 80)
     logger.info(f"PHENOTYPE CREATION: Complete - {len(out_index)} species processed")
+    logger.info(f"  Species with passing phenotypes: {len(species_with_passing)}")
+    logger.info(f"  Species with no passing phenotypes: {len(species_with_failing)}")
     logger.info(f"  Total phenotypes created: {sum(len(v) for v in out_index.values())}")
+    
+    # Debug: Check if list files were actually created
+    if species_with_passing:
+        logger.info(f"  Verifying list files for {len(species_with_passing)} species...")
+        missing_files = []
+        for species in species_with_passing:
+            idxp = pathlib.Path(out_dir) / f"{species}.list.tsv"
+            if not idxp.exists():
+                missing_files.append(species)
+                logger.error(f"    ERROR: List file missing for {species} (expected at {idxp})")
+            else:
+                # Verify the file has content
+                try:
+                    with open(idxp, 'r') as fh:
+                        lines = fh.readlines()
+                        if len(lines) < 2:  # Header + at least one data line
+                            logger.warning(f"    WARNING: List file for {species} appears empty (only {len(lines)} lines)")
+                        else:
+                            logger.debug(f"    OK: {species}.list.tsv exists with {len(lines)-1} phenotype entries")
+                except Exception as e:
+                    logger.error(f"    ERROR reading {idxp}: {e}")
+        
+        if missing_files:
+            logger.error(f"  Found {len(missing_files)} missing list files!")
+        else:
+            logger.info(f"  All {len(species_with_passing)} list files verified")
+    
     logger.info("=" * 80)
     return out_index
