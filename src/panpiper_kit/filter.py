@@ -282,14 +282,13 @@ def _process_species_phenotypes(
     if not usable_cols:
         return []
     
-    # Debug: Show Metabolic_health values if present
+    # Numerical summary for this species
     if 'Metabolic_health' in usable_cols:
-        logger.info(f"  Processing {species}: Metabolic_health values:")
-        for idx, row in sub.iterrows():
-            bin_id = row.get('bin_identifier', 'N/A')
-            patient_id = row.get('patient', 'N/A')
-            mh_val = row.get('Metabolic_health', 'N/A')
-            logger.info(f"    {bin_id} (patient: {patient_id}): Metabolic_health = {mh_val}")
+        mh_vals = sub['Metabolic_health']
+        mh_nonnull = mh_vals.notna().sum()
+        mh_unique = mh_vals.dropna().nunique() if mh_nonnull > 0 else 0
+        mh_counts = mh_vals.dropna().value_counts().to_dict() if mh_nonnull > 0 else {}
+        logger.debug(f"  {species}: Metabolic_health n={mh_nonnull}/{len(sub)}, nunique={mh_unique}, counts={mh_counts}")
 
     summary_records = []
 
@@ -338,14 +337,6 @@ def _process_species_phenotypes(
         # Early missing-fraction fail
         if rec["missing_frac"] > max_missing_frac:
             rec["fail_reason"] = f"missing_frac>{max_missing_frac}"
-            # Even if failing, write non-null rows to a phenotype file for debugging/traceability
-            s_nonnull_early = s.dropna(subset=[col])
-            if not s_nonnull_early.empty:
-                out_df = s_nonnull_early.rename(columns={'bin_identifier': 'sample', col: 'phenotype'})
-                p = pathlib.Path(out_dir) / f"{species}__{re.sub(r'[^A-Za-z0-9_.-]+','_',col)}.pheno.tsv"
-                out_df.to_csv(p, sep='\t', index=False)
-                rec["pheno_tsv"] = str(p)
-                rows.append((col, typ, str(p)))
             summary_records.append(rec)
             continue
 
@@ -373,19 +364,7 @@ def _process_species_phenotypes(
             # For binary, both levels must have >= min_level_n and overall N >= min_n
             if typ == "binary":
                 if (len(vc) != 2) or (vc.min() < min_level_n) or (len(s_nonnull) < min_n):
-                    rec["fail_reason"] = "insufficient per-level counts or total N for binary"
-                    # Write available non-null rows to phenotype file even if failing
-                    if not s_nonnull.empty:
-                        out_df = s_nonnull.rename(columns={'bin_identifier': 'sample', col: 'phenotype'})
-                        # ensure ints where possible
-                        try:
-                            out_df["phenotype"] = out_df["phenotype"].astype(int)
-                        except Exception:
-                            pass
-                        p = pathlib.Path(out_dir) / f"{species}__{re.sub(r'[^A-Za-z0-9_.-]+','_',col)}.pheno.tsv"
-                        out_df.to_csv(p, sep='\t', index=False)
-                        rec["pheno_tsv"] = str(p)
-                        rows.append((col, typ, str(p)))
+                    rec["fail_reason"] = f"binary: levels={len(vc)}, min_count={vc.min() if len(vc) > 0 else 0}, n={len(s_nonnull)}, need_levels=2 min_count>={min_level_n} n>={min_n}"
                     summary_records.append(rec)
                     continue
 
@@ -399,28 +378,14 @@ def _process_species_phenotypes(
                 rec["n_levels"] = int(len(vc2))
                 rec["level_counts_json"] = json.dumps(vc2.to_dict())
                 if len(vc2) < 2 or len(s_nonnull) < min_n:
-                    rec["fail_reason"] = "insufficient levels or total N after pruning"
-                    # Write available pruned rows even if failing
-                    if not s_nonnull.empty:
-                        out_df = s_nonnull.rename(columns={'bin_identifier': 'sample', col: 'phenotype'})
-                        p = pathlib.Path(out_dir) / f"{species}__{re.sub(r'[^A-Za-z0-9_.-]+','_',col)}.pheno.tsv"
-                        out_df.to_csv(p, sep='\t', index=False)
-                        rec["pheno_tsv"] = str(p)
-                        rows.append((col, typ, str(p)))
+                    rec["fail_reason"] = f"categorical: levels={len(vc2)}, n={len(s_nonnull)}, need_levels>=2 n>={min_n}"
                     summary_records.append(rec)
                     continue
 
         else:  # continuous
             s_vals = _series_numeric_coerce(s_nonnull[col])
             if s_vals.nunique() < min_unique_cont or len(s_vals) < min_n:
-                rec["fail_reason"] = "insufficient unique values or total N for continuous"
-                # Write available rows even if failing
-                if not s_nonnull.empty:
-                    out_df = s_nonnull.rename(columns={'bin_identifier': 'sample', col: 'phenotype'})
-                    p = pathlib.Path(out_dir) / f"{species}__{re.sub(r'[^A-Za-z0-9_.-]+','_',col)}.pheno.tsv"
-                    out_df.to_csv(p, sep='\t', index=False)
-                    rec["pheno_tsv"] = str(p)
-                    rows.append((col, typ, str(p)))
+                rec["fail_reason"] = f"continuous: nunique={s_vals.nunique()}, n={len(s_vals)}, need_nunique>={min_unique_cont} n>={min_n}"
                 summary_records.append(rec)
                 continue
             mu = s_vals.mean()
@@ -456,11 +421,17 @@ def _process_species_phenotypes(
     sum_p = pathlib.Path(out_dir) / f"{species}.pheno_summary.tsv"
     sum_df.to_csv(sum_p, sep="\t", index=False)
     
-    # Verify rows match what's in summary
-    passing_in_summary = sum_df['passes_filters'].sum() if 'passes_filters' in sum_df.columns else 0
-    if len(rows) != passing_in_summary:
-        logger.warning(f"  MISMATCH for {species}: {len(rows)} rows returned but {passing_in_summary} marked as passing in summary")
-        logger.warning(f"    This might indicate a bug in phenotype file creation")
+    # Log numerical summary
+    passing = sum_df['passes_filters'].sum() if 'passes_filters' in sum_df.columns else 0
+    total = len(sum_df)
+    if passing > 0:
+        logger.info(f"  {species}: {passing}/{total} phenotypes passed, {len(rows)} files created")
+    elif total > 0:
+        # Show failure reasons for first few
+        failed = sum_df[sum_df['passes_filters'] == False] if 'passes_filters' in sum_df.columns else sum_df
+        if len(failed) > 0:
+            reasons = failed['fail_reason'].value_counts().head(3)
+            logger.info(f"  {species}: {total} phenotypes, 0 passed. Top failures: {dict(reasons)}")
 
     return rows
 
@@ -548,57 +519,28 @@ def filter_metadata_per_species(
         logger.warning(f"  Sample metadata {sample_col} values: {list(meta[sample_col].head(10))}")
         return {}
     
-    # Debug: Show sample data after merge
-    logger.info("  Sample merged data (first 5 rows):")
+    # Numerical summary of merge
     exclude_cols_debug = {'species', 'bin_identifier', 'patient', sample_col}
     phenotype_cols = [c for c in df.columns if c not in exclude_cols_debug]
-    logger.info(f"  Available phenotype columns: {phenotype_cols}")
+    logger.info(f"  Merge result: {len(df)} rows, {len(phenotype_cols)} phenotype columns")
     
-    for idx, row in df.head(5).iterrows():
-        logger.info(f"    Row {idx}:")
-        logger.info(f"      patient: {row.get('patient', 'N/A')}")
-        logger.info(f"      sampleid: {row.get(sample_col, 'N/A')}")
-        logger.info(f"      species: {row.get('species', 'N/A')}")
-        logger.info(f"      bin_identifier: {row.get('bin_identifier', 'N/A')}")
-        for col in phenotype_cols[:5]:  # Show first 5 phenotype columns
-            val = row.get(col, 'N/A')
-            logger.info(f"      {col}: {val}")
-        if len(phenotype_cols) > 5:
-            logger.info(f"      ... and {len(phenotype_cols) - 5} more phenotype columns")
+    # Check Metabolic_health if present
+    if 'Metabolic_health' in phenotype_cols:
+        mh_nonnull = df['Metabolic_health'].notna().sum()
+        mh_unique = df['Metabolic_health'].dropna().nunique()
+        logger.info(f"  Metabolic_health: {mh_nonnull}/{len(df)} non-null, {mh_unique} unique values")
     
-    # Show merge statistics per species
+    # Numerical summary per species
     species_counts = df.groupby('species').size()
-    logger.info(f"  Species counts after merge:")
-    for sp, count in species_counts.head(10).items():
-        logger.info(f"    {sp}: {count} samples")
-    if len(species_counts) > 10:
-        logger.info(f"    ... and {len(species_counts) - 10} more species")
+    logger.info(f"  Species distribution: {len(species_counts)} species, median={species_counts.median():.1f} samples/species, range=[{species_counts.min()}-{species_counts.max()}]")
     
-    # Debug: Show phenotype data availability per species
-    logger.info("  Checking phenotype data availability per species (first 5 species):")
-    for species, sub in list(df.groupby('species', sort=False))[:5]:
-        exclude_cols_sub = {'species', 'bin_identifier', 'patient', sample_col}
-        usable_cols_sub = [c for c in sub.columns if c not in exclude_cols_sub]
-        logger.info(f"    Species: {species}")
-        logger.info(f"      Samples: {len(sub)}")
-        logger.info(f"      Phenotype columns: {len(usable_cols_sub)}")
-        
-        # Special check for Metabolic_health if it exists
-        if 'Metabolic_health' in usable_cols_sub:
-            logger.info(f"      Metabolic_health values for all samples:")
-            for idx, row in sub.iterrows():
-                bin_id = row.get('bin_identifier', 'N/A')
-                patient_id = row.get('patient', 'N/A')
-                mh_val = row.get('Metabolic_health', 'N/A')
-                logger.info(f"        {bin_id} (patient: {patient_id}): {mh_val}")
-        
-        for col in usable_cols_sub[:3]:  # Show first 3 columns
-            non_null = sub[col].notna().sum()
-            unique_vals = sub[col].dropna().nunique() if non_null > 0 else 0
-            sample_vals = sub[col].dropna().head(3).tolist() if non_null > 0 else []
-            logger.info(f"        {col}: {non_null}/{len(sub)} non-null, {unique_vals} unique values, sample: {sample_vals}")
-        if len(usable_cols_sub) > 3:
-            logger.info(f"        ... and {len(usable_cols_sub) - 3} more columns")
+    # Metabolic_health summary per species
+    if 'Metabolic_health' in phenotype_cols:
+        mh_by_species = df.groupby('species')['Metabolic_health'].agg(['count', lambda x: x.notna().sum(), 'nunique'])
+        mh_by_species.columns = ['total', 'nonnull', 'unique']
+        mh_with_data = (mh_by_species['nonnull'] > 0).sum()
+        mh_median_unique = mh_by_species['unique'].median() if mh_with_data > 0 else 0
+        logger.info(f"  Metabolic_health by species: {mh_with_data}/{len(species_counts)} species have data, median_nunique={mh_median_unique:.1f}")
 
     out_index: Dict[str, List[Tuple[str, str, str]]] = {}
     species_with_passing = []
