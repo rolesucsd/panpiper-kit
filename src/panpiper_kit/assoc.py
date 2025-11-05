@@ -19,6 +19,32 @@ _DM: Optional[pd.DataFrame] = None
 _DM_IDS: Optional[List[str]] = None
 _PCOA_CACHE: Dict[str, Tuple[np.ndarray, np.ndarray, Dict]] = {}  # Cache PCoA results
 
+# ----------------- merge constants -----------------
+MERGE_KEY_COLS = ["species", "metadata", "type", "pheno_tsv"]
+EXACT_PREFIXED_KEY_COLS = ["exact_species", "exact_metadata", "exact_type", "exact_pheno_tsv"]
+
+
+def _prepare_exact_df_for_merge(exact_df: pd.DataFrame, exact_rows: List[Dict]) -> pd.DataFrame:
+    """Return a DataFrame with prefixed columns expected by merge.
+
+    If exact_df is empty or missing required keys, return an empty
+    DataFrame with the expected prefixed key columns so the merge
+    succeeds with left joins producing NaNs.
+    """
+    if exact_df.empty:
+        logger.debug("exact_df is empty, creating empty pref with expected columns")
+        return pd.DataFrame(columns=EXACT_PREFIXED_KEY_COLS)
+
+    missing_cols = [c for c in MERGE_KEY_COLS if c not in exact_df.columns]
+    if missing_cols:
+        logger.error(f"exact_df missing required columns: {missing_cols}. Available: {list(exact_df.columns)}")
+        logger.error(f"exact_rows sample (first 2): {exact_rows[:2] if exact_rows else '[]'}")
+        return pd.DataFrame(columns=EXACT_PREFIXED_KEY_COLS)
+
+    pref = exact_df.add_prefix("exact_")
+    logger.debug(f"pref shape after add_prefix: {pref.shape}, columns: {list(pref.columns)}")
+    return pref
+
 # ----------------- constants -----------------
 # Minimum samples for distance-based test (4 needed for df > 0 in most tests)
 MIN_SAMPLES_DISTANCE_TEST = 4
@@ -638,28 +664,12 @@ def run_assoc(
         logger.debug(f"exact_df shape: {exact_df.shape}, columns: {list(exact_df.columns)}")
 
     # --- merge & return ---
-    # Prefix exact_df columns for merge
-    if exact_df.empty:
-        # Create empty DataFrame with expected prefixed columns
-        logger.debug("exact_df is empty, creating empty pref with expected columns")
-        pref = pd.DataFrame(columns=["exact_species", "exact_metadata", "exact_type", "exact_pheno_tsv"])
-    else:
-        # Ensure exact_df has the required merge keys
-        required_cols = ["species", "metadata", "type", "pheno_tsv"]
-        missing_cols = [c for c in required_cols if c not in exact_df.columns]
-        if missing_cols:
-            logger.error(f"exact_df missing required columns: {missing_cols}. Available: {list(exact_df.columns)}")
-            logger.error(f"exact_rows sample (first 2): {exact_rows[:2] if exact_rows else '[]'}")
-            # Create empty DataFrame with expected prefixed columns
-            pref = pd.DataFrame(columns=["exact_species", "exact_metadata", "exact_type", "exact_pheno_tsv"])
-        else:
-            pref = exact_df.add_prefix("exact_")
-            logger.debug(f"pref shape after add_prefix: {pref.shape}, columns: {list(pref.columns)}")
+    pref = _prepare_exact_df_for_merge(exact_df, exact_rows)
 
     out = fast_df.merge(
         pref,
-        left_on=["species","metadata","type","pheno_tsv"],
-        right_on=["exact_species","exact_metadata","exact_type","exact_pheno_tsv"],
+        left_on=MERGE_KEY_COLS,
+        right_on=EXACT_PREFIXED_KEY_COLS,
         how="left"
     )
     # pretty columns
