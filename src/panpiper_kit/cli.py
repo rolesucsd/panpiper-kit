@@ -585,7 +585,20 @@ def has_passing_phenotypes(species: str, phenos_dir: pathlib.Path) -> bool:
             return False
         # Check if any phenotype has passes_filters == True
         if 'passes_filters' in df.columns:
-            return df['passes_filters'].any()
+            # Convert to boolean if it's stored as string (e.g., "True"/"False" or "1"/"0")
+            passes_col = df['passes_filters']
+            # Handle various formats: boolean, string "True"/"False", int 1/0
+            if passes_col.dtype == 'object':
+                # Try to convert string representations to boolean
+                # Handle "True", "False", "1", "0", etc.
+                passes_col = passes_col.astype(str).str.lower().isin(['true', '1', 'yes'])
+            elif passes_col.dtype in ['int64', 'int32', 'float64', 'float32']:
+                # If numeric, convert 1 to True, 0 to False
+                passes_col = passes_col.astype(bool)
+            # Now check if any are True (passes_col should already be boolean)
+            has_passing = bool(passes_col.any())
+            logger.debug(f"Species {species}: has_passing_phenotypes={has_passing} (from {len(df)} phenotype rows)")
+            return has_passing
         # If column doesn't exist, assume no phenotypes passed (old format)
         return False
     except Exception as e:
@@ -1294,13 +1307,31 @@ def main() -> None:
     remaining_species = _get_remaining_species(sp_to_samples, args, phenos, mash_dir, pyseer_dir, distance_assoc_dir, unitig_dir)
     
     # Filter out species with no valid phenotypes
-    species_with_valid_phenos = {
-        sp: sams for sp, sams in remaining_species.items()
-        if sp in phenos and len(phenos[sp]) > 0 and has_passing_phenotypes(sp, phenos_dir)
-    }
-    if len(species_with_valid_phenos) < len(remaining_species):
-        skipped = len(remaining_species) - len(species_with_valid_phenos)
-        logger.info(f"Skipping {skipped} species with no passing phenotypes")
+    species_with_valid_phenos = {}
+    skipped_species = []
+    for sp, sams in remaining_species.items():
+        # Check multiple conditions:
+        # 1. Species must be in phenos dict
+        # 2. Species must have at least one phenotype entry
+        # 3. At least one phenotype must have passed filters (check summary file)
+        if sp not in phenos:
+            skipped_species.append(f"{sp} (not in phenos)")
+            continue
+        if len(phenos[sp]) == 0:
+            skipped_species.append(f"{sp} (empty phenotype list)")
+            continue
+        if not has_passing_phenotypes(sp, phenos_dir):
+            skipped_species.append(f"{sp} (no passing phenotypes)")
+            continue
+        # All checks passed
+        species_with_valid_phenos[sp] = sams
+    
+    if skipped_species:
+        logger.info(f"Skipping {len(skipped_species)} species with no passing phenotypes:")
+        for skipped in skipped_species[:10]:  # Log first 10
+            logger.info(f"  - {skipped}")
+        if len(skipped_species) > 10:
+            logger.info(f"  ... and {len(skipped_species) - 10} more")
     remaining_species = species_with_valid_phenos
 
     # Generate comprehensive summary of all input files and their status
