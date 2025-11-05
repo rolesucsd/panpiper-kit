@@ -329,6 +329,14 @@ def _process_species_phenotypes(
         # Early missing-fraction fail
         if rec["missing_frac"] > max_missing_frac:
             rec["fail_reason"] = f"missing_frac>{max_missing_frac}"
+            # Even if failing, write non-null rows to a phenotype file for debugging/traceability
+            s_nonnull_early = s.dropna(subset=[col])
+            if not s_nonnull_early.empty:
+                out_df = s_nonnull_early.rename(columns={'bin_identifier': 'sample', col: 'phenotype'})
+                p = pathlib.Path(out_dir) / f"{species}__{re.sub(r'[^A-Za-z0-9_.-]+','_',col)}.pheno.tsv"
+                out_df.to_csv(p, sep='\t', index=False)
+                rec["pheno_tsv"] = str(p)
+                rows.append((col, typ, str(p)))
             summary_records.append(rec)
             continue
 
@@ -357,6 +365,18 @@ def _process_species_phenotypes(
             if typ == "binary":
                 if (len(vc) != 2) or (vc.min() < min_level_n) or (len(s_nonnull) < min_n):
                     rec["fail_reason"] = "insufficient per-level counts or total N for binary"
+                    # Write available non-null rows to phenotype file even if failing
+                    if not s_nonnull.empty:
+                        out_df = s_nonnull.rename(columns={'bin_identifier': 'sample', col: 'phenotype'})
+                        # ensure ints where possible
+                        try:
+                            out_df["phenotype"] = out_df["phenotype"].astype(int)
+                        except Exception:
+                            pass
+                        p = pathlib.Path(out_dir) / f"{species}__{re.sub(r'[^A-Za-z0-9_.-]+','_',col)}.pheno.tsv"
+                        out_df.to_csv(p, sep='\t', index=False)
+                        rec["pheno_tsv"] = str(p)
+                        rows.append((col, typ, str(p)))
                     summary_records.append(rec)
                     continue
 
@@ -371,6 +391,13 @@ def _process_species_phenotypes(
                 rec["level_counts_json"] = json.dumps(vc2.to_dict())
                 if len(vc2) < 2 or len(s_nonnull) < min_n:
                     rec["fail_reason"] = "insufficient levels or total N after pruning"
+                    # Write available pruned rows even if failing
+                    if not s_nonnull.empty:
+                        out_df = s_nonnull.rename(columns={'bin_identifier': 'sample', col: 'phenotype'})
+                        p = pathlib.Path(out_dir) / f"{species}__{re.sub(r'[^A-Za-z0-9_.-]+','_',col)}.pheno.tsv"
+                        out_df.to_csv(p, sep='\t', index=False)
+                        rec["pheno_tsv"] = str(p)
+                        rows.append((col, typ, str(p)))
                     summary_records.append(rec)
                     continue
 
@@ -378,6 +405,13 @@ def _process_species_phenotypes(
             s_vals = _series_numeric_coerce(s_nonnull[col])
             if s_vals.nunique() < min_unique_cont or len(s_vals) < min_n:
                 rec["fail_reason"] = "insufficient unique values or total N for continuous"
+                # Write available rows even if failing
+                if not s_nonnull.empty:
+                    out_df = s_nonnull.rename(columns={'bin_identifier': 'sample', col: 'phenotype'})
+                    p = pathlib.Path(out_dir) / f"{species}__{re.sub(r'[^A-Za-z0-9_.-]+','_',col)}.pheno.tsv"
+                    out_df.to_csv(p, sep='\t', index=False)
+                    rec["pheno_tsv"] = str(p)
+                    rows.append((col, typ, str(p)))
                 summary_records.append(rec)
                 continue
             mu = s_vals.mean()
