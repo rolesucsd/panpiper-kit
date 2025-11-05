@@ -634,8 +634,24 @@ def run_assoc(
     exact_df = pd.DataFrame(exact_rows)
 
     # --- merge & return ---
+    # Ensure consistent keys for merge: prefer 'species' column
+    if not exact_df.empty:
+        # If exact_df contains prefixed keys after add_prefix, ensure species key exists
+        pref = exact_df.add_prefix("exact_")
+        # Backward-compat: if exact_species is missing but exact_species/metadata exist differently
+        if "exact_species" not in pref.columns and "species" in exact_df.columns:
+            pref = pref.rename(columns={"species": "exact_species"})
+        if "exact_metadata" not in pref.columns and "metadata" in exact_df.columns:
+            pref = pref.rename(columns={"metadata": "exact_metadata"})
+        if "exact_type" not in pref.columns and "type" in exact_df.columns:
+            pref = pref.rename(columns={"type": "exact_type"})
+        if "exact_pheno_tsv" not in pref.columns and "pheno_tsv" in exact_df.columns:
+            pref = pref.rename(columns={"pheno_tsv": "exact_pheno_tsv"})
+    else:
+        pref = exact_df.add_prefix("exact_")
+
     out = fast_df.merge(
-        exact_df.add_prefix("exact_"),
+        pref,
         left_on=["species","metadata","type","pheno_tsv"],
         right_on=["exact_species","exact_metadata","exact_type","exact_pheno_tsv"],
         how="left"
