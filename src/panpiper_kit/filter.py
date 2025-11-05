@@ -281,6 +281,15 @@ def _process_species_phenotypes(
     
     if not usable_cols:
         return []
+    
+    # Debug: Show Metabolic_health values if present
+    if 'Metabolic_health' in usable_cols:
+        logger.info(f"  Processing {species}: Metabolic_health values:")
+        for idx, row in sub.iterrows():
+            bin_id = row.get('bin_identifier', 'N/A')
+            patient_id = row.get('patient', 'N/A')
+            mh_val = row.get('Metabolic_health', 'N/A')
+            logger.info(f"    {bin_id} (patient: {patient_id}): Metabolic_health = {mh_val}")
 
     summary_records = []
 
@@ -573,6 +582,16 @@ def filter_metadata_per_species(
         logger.info(f"    Species: {species}")
         logger.info(f"      Samples: {len(sub)}")
         logger.info(f"      Phenotype columns: {len(usable_cols_sub)}")
+        
+        # Special check for Metabolic_health if it exists
+        if 'Metabolic_health' in usable_cols_sub:
+            logger.info(f"      Metabolic_health values for all samples:")
+            for idx, row in sub.iterrows():
+                bin_id = row.get('bin_identifier', 'N/A')
+                patient_id = row.get('patient', 'N/A')
+                mh_val = row.get('Metabolic_health', 'N/A')
+                logger.info(f"        {bin_id} (patient: {patient_id}): {mh_val}")
+        
         for col in usable_cols_sub[:3]:  # Show first 3 columns
             non_null = sub[col].notna().sum()
             unique_vals = sub[col].dropna().nunique() if non_null > 0 else 0
