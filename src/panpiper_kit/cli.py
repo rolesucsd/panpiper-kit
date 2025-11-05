@@ -1245,6 +1245,16 @@ def main() -> None:
     ani = pd.read_csv(args.ani_map, sep='\t', names=['species','sample']).drop_duplicates()
     species_list = sorted(ani['species'].unique())
     
+    # Build species -> sample list early to restrict phenotype generation to eligible species
+    sp_to_samples_all = _build_species_sample_map(ani, s2p, args.min_n)
+    eligible_species = set(sp_to_samples_all.keys())
+    logger.info(f"Eligible species for processing (N>={args.min_n}): {len(eligible_species)}")
+
+    # Create a temporary ANI map limited to eligible species for phenotype generation
+    temp_ani_map_all = work / 'temp_ani_map_eligible.tsv'
+    ani_eligible = ani[ani['species'].isin(eligible_species)]
+    ani_eligible.to_csv(temp_ani_map_all, sep='\t', index=False, header=False)
+
     # Handle phenotype file generation with resume logic
     phenos_dir = work / 'phenos'
     phenos_dir.mkdir(parents=True, exist_ok=True)
@@ -1273,7 +1283,7 @@ def main() -> None:
             incomplete_ani = ani[ani['species'].isin(incomplete_pheno_species)]
             incomplete_ani.to_csv(temp_ani_map, sep='\t', index=False, header=False)
             
-            # Generate phenotype files for incomplete species only
+            # Generate phenotype files for incomplete species only (but still restricted to eligible species)
             filter_metadata_per_species(
                 metadata_fp=args.metadata, ani_map_fp=str(temp_ani_map), out_dir=str(phenos_dir),
                 min_n=args.min_n, max_missing_frac=args.max_missing_frac,
@@ -1290,20 +1300,20 @@ def main() -> None:
                 phenos[sp] = [(v, t, p) for (v, t, p) in phenos[sp] if pf in str(v).lower()]
         
     else:
-        # Force mode or no resume - regenerate all phenotype files
+        # Force mode or no resume - regenerate all phenotype files (restricted to eligible species)
         if args.force:
             logger.info("Force mode: Regenerating all phenotype files")
         
         phenos = filter_metadata_per_species(
-            metadata_fp=args.metadata, ani_map_fp=args.ani_map, out_dir=str(phenos_dir),
+            metadata_fp=args.metadata, ani_map_fp=str(temp_ani_map_all), out_dir=str(phenos_dir),
             min_n=args.min_n, max_missing_frac=args.max_missing_frac,
             min_level_n=args.min_level_n, min_unique_cont=args.min_unique_cont,
             custom_missing_values=args.missing_values,
             phenotype_filter=args.phenotype
         )
 
-    # Build species -> sample list and determine which species to process
-    sp_to_samples = _build_species_sample_map(ani, s2p, args.min_n)
+    # Build species -> sample list and determine which species to process (already eligible)
+    sp_to_samples = sp_to_samples_all
     remaining_species = _get_remaining_species(sp_to_samples, args, phenos, mash_dir, pyseer_dir, distance_assoc_dir, unitig_dir)
     
     # Filter out species with no valid phenotypes
