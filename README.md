@@ -5,19 +5,12 @@
 - **ANI-based species bins** (you supply an ANI map of genomes → species clusters).
 - **Mash distances** within each species to capture fine-scale lineage structure.
 - **Distance-based association tests** between lineage structure and metadata:
-  - **PERMANOVA** for categorical/binary traits (does lineage structure separate cases vs controls?).
-  - **Mantel (Spearman)** for continuous traits (do pairwise Mash distances correlate with phenotype differences?).
+  - **PERMANOVA** for categorical/binary traits
+  - **Mantel (Spearman)** for continuous traits
 - **Per-species GWAS with pyseer** on unitigs (from `unitig-caller`):
-  - Runs for **binary** and **continuous** phenotypes only.
-  - Automatically applies **Benjamini–Hochberg (BH/FDR)** correction.
-
-All inputs and outputs are plain TSVs, designed to be easily piped into downstream stats/plots.
-
 ---
 
 ## Why use this?
-
-Typical GWAS pipelines (`pyseer` etc.) assume you already know what to test (unitigs, SNPs, accessory genes). But often the first question is simpler:
 
 > *Within a species, do the lineages split by phenotype?*
 
@@ -33,16 +26,11 @@ So you can immediately see which species × phenotypes show meaningful structure
 
 ## Key features
 
-- **Species-aware**: Never runs all-vs-all Mash; everything is contained within ANI-defined species bins.
-- **No arbitrary clusters**: Doesn’t invent “phylogroups.” Lineage effects are measured directly from the Mash distance matrix.
-- **Phenotype-aware filtering**:
-  - Drops metadata columns with no variation or too few samples.
-  - Drops phenotype categories that don’t meet a user-specified minimum count.
-  - Continuous phenotypes must have enough unique values (default: ≥6).
+- **Species-aware**: tests within ANI-defined species bins (typically a 95% cutoff).
+- **Examines lineage/phenotype clusters**: Lineage effects are measured directly from the Mash distance matrix.
 - **Dual-layer results**:
   - *Lineage-level* (PERMANOVA/Mantel p-values).
   - *Locus-level* (pyseer unitig GWAS hits).
-- **Speed-first**: Uses `mash` + `unitig-caller` + `pyseer` with sensible defaults (`-k 18 -s 5000`, multi-threaded).
 
 ---
 
@@ -203,16 +191,11 @@ The toolkit automatically converts common missing value indicators to NaN to pre
 - `pending`, `tbd`, `to be determined`
 - `not recorded`, `not documented`, `not assessed`, `not evaluated`
 
-**Custom missing values**:
-```bash
-ppk-run --missing-values "custom_value1" "custom_value2" --genomes genomes/ --metadata metadata.tsv --ani-map ani_map.tsv --out results/
-```
-
 ---
 
 ## Caveats
 
 - **PERMANOVA** can give significant p-values just from unequal variance across groups. Check dispersion (`betadisper`) if in doubt.
 - **Mantel** is conservative; low power for continuous traits. Consider dbRDA if you need more.
-- **pyseer** here is run with `--no-distances` (no structure correction) for speed. If lineage confounding is a concern, rerun with `--distances`.
+- **pyseer** here is run with `--no-distances` (no structure correction) in order to examine differences between lineages. If lineage confounding is a concern, rerun with `--distances`.
 - **Mash** is O(N²) per species. With thousands of genomes in one species, consider approximate clustering (e.g. Dashing).
