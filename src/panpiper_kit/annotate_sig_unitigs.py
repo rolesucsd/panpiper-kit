@@ -60,6 +60,7 @@ import shlex
 import subprocess
 from collections import defaultdict
 from pathlib import Path
+from typing import Optional, List
 
 try:
     import pandas as pd
@@ -424,14 +425,14 @@ def ensure_bakta_for_sample(
 
 def process_sample(
     sample: str,
-    unitigs_for_sample: list[str],
+    unitigs_for_sample: List[str],
     fasta_dir: Path,
     fasta_pattern: str,
-    anno_dir: Path | None,
+    anno_dir: Optional[Path],
     anno_pattern: str,
     run_bakta: bool,
     bakta_bin: str,
-    bakta_db: Path | None,
+    bakta_db: Optional[Path],
     bakta_out_dir: Path,
     bakta_cores: int,
     bakta_extra_args: str,

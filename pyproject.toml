@@ -7,7 +7,38 @@ name = "panpiper-kit"
 version = "0.1.0"
 description = "Toolkit: ANI-split Mash lineage tests + per-species unitig GWAS (pyseer), with phenotype filtering and FDR"
 readme = "README.md"
-license = {text = "MIT"}
+license = {text = "BSD-3-Clause"}
+authors = [
+  {name = "rolesucsd", email = "roles@health.ucsd.edu"}
+]
+maintainers = [
+  {name = "rolesucsd", email = "roles@health.ucsd.edu"}
+]
+keywords = [
+  "genomics",
+  "GWAS",
+  "population-genetics",
+  "bacterial-genomics",
+  "pyseer",
+  "mash",
+  "PERMANOVA",
+  "unitig-gwas",
+  "microbial-genomics",
+  "association-testing"
+]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Science/Research",
+  "License :: OSI Approved :: BSD License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Scientific/Engineering :: Bio-Informatics",
+  "Topic :: Scientific/Engineering :: Medical Science Apps.",
+  "Operating System :: OS Independent",
+]
 requires-python = ">=3.9"
 dependencies = [
   "pandas>=2.1",
@@ -15,6 +46,19 @@ dependencies = [
   "scikit-bio>=0.6.0",
   "statsmodels>=0.14",
   "scipy>=1.10"
+]
+
+[project.urls]
+Homepage = "https://github.com/rolesucsd/panpiper-kit"
+Repository = "https://github.com/rolesucsd/panpiper-kit"
+Issues = "https://github.com/rolesucsd/panpiper-kit/issues"
+Documentation = "https://github.com/rolesucsd/panpiper-kit#readme"
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0",
+  "pytest-cov>=4.0",
+  "pytest-asyncio>=0.23"
 ]
 
 [project.scripts]
