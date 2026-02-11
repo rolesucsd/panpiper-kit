@@ -94,7 +94,9 @@ def _align_common(ph: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray, List[str]]:
     ph = ph.dropna(subset=['phenotype']).copy()
     ph['sample'] = ph['sample'].astype(str)
     # keep in matrix order for consistency
-    keep_ids = [sid for sid in _DM_IDS if sid in set(ph['sample'])]
+    # Pre-compute set for O(1) lookup instead of O(n)
+    ph_samples = set(ph['sample'])
+    keep_ids = [sid for sid in _DM_IDS if sid in ph_samples]
     if len(keep_ids) < MIN_SAMPLES_DISTANCE_TEST:
         return np.empty((0,0)), np.array([]), []
     y = ph.set_index('sample').loc[keep_ids, 'phenotype'].values
@@ -228,12 +230,21 @@ def _fast_test(pheno_tsv: str, typ: str, max_axes: int = DEFAULT_MAX_AXES
         p = Xpc.shape[1]
         df1 = p
         df2 = n - (p + 1)
-        if df2 <= 0 or tss == 0:
+
+        # Validate degrees of freedom
+        if df1 <= 0 or df2 <= 0 or tss == 0:
             return {"n_samples": n, "test": "FAST_OLS_PC", "stat": np.nan, "pvalue": np.nan,
                     "neg_inertia": diag["neg_inertia"], "k_axes": diag["k"]}
+
         R2 = 1 - rss / tss
-        F = (R2/df1) / ((1-R2)/df2) if (1-R2) > 0 else np.inf
-        pval = 1.0 - f_dist.cdf(F, df1, df2)
+
+        # Calculate F-statistic with proper handling of edge cases
+        if (1 - R2) <= 0:
+            F = np.inf
+            pval = 0.0  # Perfect fit -> p-value is 0
+        else:
+            F = (R2 / df1) / ((1 - R2) / df2)
+            pval = 1.0 - f_dist.cdf(F, df1, df2)
         return {"n_samples": n, "test": "FAST_OLS_PC", "stat": float(F), "pvalue": float(pval),
                 "neg_inertia": diag["neg_inertia"], "k_axes": diag["k"], "R2": float(R2)}
 
@@ -368,7 +379,12 @@ def _permanova_large_perms(DM_array: np.ndarray, grouping: np.ndarray,
                 total_exceedances += _permanova_chunk(DM_array, grouping, chunk_size, obs_F, seed)
 
         # Calculate p-value with "+1" correction
-        pvalue = (total_exceedances + 1) / (actual_perms + 1)
+        # Special case: if all permutations exceed observed, this is highly significant
+        if total_exceedances == actual_perms:
+            # All permutations more extreme - highly significant
+            pvalue = 1.0 / (actual_perms + 1)
+        else:
+            pvalue = (total_exceedances + 1) / (actual_perms + 1)
 
         return {
             "n_samples": len(grouping),

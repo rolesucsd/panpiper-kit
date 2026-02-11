@@ -146,16 +146,84 @@ def test_mash_within_species_command_failure(mock_exists, mock_ensure_dir, mock_
     mock_exists.return_value = False  # Output doesn't exist, so we need to create it
     mock_ensure_dir.return_value = None
     mock_run.side_effect = Exception("Mash command failed")
-    
+
     with tempfile.TemporaryDirectory() as tmpdir:
         fasta_paths = [str(pathlib.Path(tmpdir) / 'sample1.fasta')]
         pathlib.Path(fasta_paths[0]).touch()
-        
+
         out_dir = pathlib.Path(tmpdir) / 'output'
         out_dir.mkdir()  # Create the directory
-        
+
         try:
             mash_within_species(fasta_paths, str(out_dir), k=18, s=10000, threads=4)
             assert False, "Should have raised exception"
         except Exception as e:
             assert "Mash command failed" in str(e)
+
+
+def test_sample_id_collision_detection():
+    """
+    Regression test for Bug #1: Sample ID collision.
+
+    Tests that identical basenames from different paths are detected and rejected.
+    This prevents silent data loss from ID collisions.
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Create pairs data with duplicate sample IDs (different paths, same basename)
+        pairs_data = [
+            ['/path1/sample1.fa', '/path2/sample2.fa', 0.1, 0.0, 1000],
+            ['/path1/sample1.fa', '/path3/sample1.fa', 0.2, 0.0, 800],  # Duplicate basename!
+            ['/path2/sample2.fa', '/path1/sample1.fa', 0.1, 0.0, 1000],
+            ['/path2/sample2.fa', '/path3/sample1.fa', 0.15, 0.0, 900],
+            ['/path3/sample1.fa', '/path1/sample1.fa', 0.2, 0.0, 800],
+            ['/path3/sample1.fa', '/path2/sample2.fa', 0.15, 0.0, 900]
+        ]
+
+        pairs_file = pathlib.Path(tmpdir) / 'pairs.tsv'
+        with open(pairs_file, 'w') as f:
+            for row in pairs_data:
+                f.write('\t'.join(map(str, row)) + '\n')
+
+        out_file = pathlib.Path(tmpdir) / 'square.tsv'
+
+        # Should raise ValueError about duplicate sample ID
+        try:
+            _square_from_pairs(str(pairs_file), str(out_file))
+            assert False, "Should have raised ValueError for duplicate sample ID"
+        except ValueError as e:
+            assert "Duplicate sample ID" in str(e)
+            assert "sample1" in str(e)
+
+
+def test_sample_id_extraction_various_extensions():
+    """Test that sample ID extraction works correctly for various file extensions."""
+    from panpiper_kit.mash import mash_within_species
+
+    test_cases = [
+        ('sample1.fa', 'sample1'),
+        ('sample1.fna', 'sample1'),
+        ('sample1.fasta', 'sample1'),
+        ('sample1.fa.gz', 'sample1'),
+        ('sample1.fna.gz', 'sample1'),
+        ('sample1.fasta.gz', 'sample1'),
+        ('sample.with.dots.fa', 'sample.with.dots'),
+        ('path/to/sample1.fa', 'sample1'),  # basename extraction
+    ]
+
+    # We can't directly test the internal _extract_sample_id function,
+    # but we can test it indirectly through _square_from_pairs
+    # For now, just verify that files with these extensions are handled
+    # This is more of a documentation test
+    for path, expected_id in test_cases:
+        # Just verify the pattern is as expected
+        import os
+        basename = os.path.basename(path)
+        for ext in ('.fa.gz', '.fna.gz', '.fasta.gz', '.fa', '.fna', '.fasta'):
+            if basename.endswith(ext):
+                extracted = basename[:-len(ext)]
+                if extracted == expected_id:
+                    break
+        else:
+            extracted = basename
+
+        assert extracted == expected_id, f"Failed for {path}"

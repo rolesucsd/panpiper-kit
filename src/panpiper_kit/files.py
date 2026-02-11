@@ -8,6 +8,34 @@ from typing import List, Dict, Optional
 FA_RE = re.compile(r'\.(fa|fna|fasta)(\.gz)?$', re.I)
 
 
+def safe_sample_name(sample: str) -> str:
+    """
+    Validate sample name doesn't contain path traversal or unsafe characters.
+
+    Args:
+        sample: Sample name to validate
+
+    Returns:
+        The validated sample name
+
+    Raises:
+        ValueError: If sample name contains unsafe characters
+    """
+    if not sample:
+        raise ValueError("Sample name cannot be empty")
+
+    # Check for unsafe characters first (allows only alphanumeric, underscore, dash, dot)
+    # This catches all unsafe characters including /, \, ;, |, etc.
+    if not re.match(r'^[A-Za-z0-9_.-]+$', sample):
+        raise ValueError(f"Sample name contains unsafe characters: {sample}")
+
+    # Then check for path traversal patterns specifically
+    if '..' in sample:
+        raise ValueError(f"Invalid sample name (path traversal attempt): {sample}")
+
+    return sample
+
+
 def list_fastas(genomes_dir: str) -> Dict[str, str]:
     """
     List all FASTA files in a directory and map basenames to full paths.

@@ -95,26 +95,126 @@ def test_add_bh_custom_pcol_guess():
         'custom_pval': [0.01, 0.05, 0.1]
     }
     df = pd.DataFrame(data)
-    
+
     with tempfile.NamedTemporaryFile(mode='w', suffix='.tsv', delete=False) as infile:
         df.to_csv(infile.name, sep='\t', index=False)
         infile_path = infile.name
-    
+
     with tempfile.NamedTemporaryFile(mode='w', suffix='.tsv', delete=False) as outfile:
         outfile_path = outfile.name
-    
+
     try:
         # Run add_bh with custom p-value column
         add_bh(infile_path, outfile_path, pcol_guess=('custom_pval',))
-        
+
         # Check output
         result_df = pd.read_csv(outfile_path, sep='\t')
-        
+
         # Should have q-values for the custom column
         assert 'qvalue_bh' in result_df.columns
         assert 'significant_bh_0.05' in result_df.columns
-        
+
     finally:
         import os
         os.unlink(infile_path)
         os.unlink(outfile_path)
+
+
+def test_add_bh_all_nan_pvalues():
+    """
+    Regression test for Bug #2: Empty/all-NaN p-values crash.
+
+    Tests that all-NaN p-value columns don't cause IndexError.
+    The function should handle this gracefully and set q-values to NaN.
+    """
+    # Create test data with all-NaN p-values
+    data = {
+        'variant': ['var1', 'var2', 'var3'],
+        'lrt-pvalue': [np.nan, np.nan, np.nan]
+    }
+    df = pd.DataFrame(data)
+
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.tsv', delete=False) as infile:
+        df.to_csv(infile.name, sep='\t', index=False)
+        infile_path = infile.name
+
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.tsv', delete=False) as outfile:
+        outfile_path = outfile.name
+
+    try:
+        # Should not crash
+        add_bh(infile_path, outfile_path)
+
+        # Check output
+        result_df = pd.read_csv(outfile_path, sep='\t')
+
+        # q-values should all be NaN or NA
+        assert 'qvalue_bh' in result_df.columns
+        assert result_df['qvalue_bh'].isna().all(), "All q-values should be NaN when all p-values are NaN"
+
+        # significant column should all be False
+        assert 'significant_bh_0.05' in result_df.columns
+        assert not result_df['significant_bh_0.05'].any(), "Nothing should be significant when all p-values are NaN"
+
+    finally:
+        import os
+        os.unlink(infile_path)
+        os.unlink(outfile_path)
+
+
+def test_add_bh_mixed_nan_pvalues():
+    """Test add_bh with mixed valid and NaN p-values."""
+    # Create test data with some NaN p-values
+    data = {
+        'variant': ['var1', 'var2', 'var3', 'var4', 'var5'],
+        'lrt-pvalue': [0.01, np.nan, 0.05, np.nan, 0.1]
+    }
+    df = pd.DataFrame(data)
+
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.tsv', delete=False) as infile:
+        df.to_csv(infile.name, sep='\t', index=False)
+        infile_path = infile.name
+
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.tsv', delete=False) as outfile:
+        outfile_path = outfile.name
+
+    try:
+        # Should not crash
+        add_bh(infile_path, outfile_path)
+
+        # Check output
+        result_df = pd.read_csv(outfile_path, sep='\t')
+
+        assert 'qvalue_bh' in result_df.columns
+
+        # q-values should be NaN where p-values were NaN
+        assert pd.isna(result_df.loc[1, 'qvalue_bh']), "q-value should be NaN where p-value was NaN"
+        assert pd.isna(result_df.loc[3, 'qvalue_bh']), "q-value should be NaN where p-value was NaN"
+
+        # q-values should be valid where p-values were valid
+        assert not pd.isna(result_df.loc[0, 'qvalue_bh']), "q-value should be valid where p-value was valid"
+        assert not pd.isna(result_df.loc[2, 'qvalue_bh']), "q-value should be valid where p-value was valid"
+        assert not pd.isna(result_df.loc[4, 'qvalue_bh']), "q-value should be valid where p-value was valid"
+
+    finally:
+        import os
+        os.unlink(infile_path)
+        os.unlink(outfile_path)
+
+
+def test_compute_bh_qvalues_empty_array():
+    """Test canonical compute_bh_qvalues with empty array."""
+    from panpiper_kit.fdr import compute_bh_qvalues
+
+    # Test with all-NaN array
+    pvalues = np.array([np.nan, np.nan, np.nan])
+    qvalues = compute_bh_qvalues(pvalues)
+
+    assert len(qvalues) == len(pvalues)
+    assert np.all(np.isnan(qvalues))
+
+    # Test with empty array
+    pvalues_empty = np.array([])
+    qvalues_empty = compute_bh_qvalues(pvalues_empty)
+
+    assert len(qvalues_empty) == 0

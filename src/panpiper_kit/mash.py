@@ -28,11 +28,24 @@ def _square_from_pairs(pairs_tsv: str, out_tsv: str) -> None:
     # Use the full filename (without path) as the identifier to preserve uniqueness
     def extract_sample_id(path):
         basename = os.path.basename(path)
-        # Remove .fa extension if present
-        if basename.endswith('.fa'):
-            return basename[:-3]
+        # Remove all common FASTA extensions
+        for ext in ('.fa.gz', '.fna.gz', '.fasta.gz', '.fa', '.fna', '.fasta'):
+            if basename.endswith(ext):
+                return basename[:-len(ext)]
         return basename
-    
+
+    # Check for collisions before assignment
+    sample_ids = {}
+    for path in mat.index:
+        sid = extract_sample_id(path)
+        if sid in sample_ids:
+            raise ValueError(
+                f"Duplicate sample ID '{sid}' from files: "
+                f"{sample_ids[sid]} and {path}. "
+                f"This could indicate files with the same basename in different directories."
+            )
+        sample_ids[sid] = path
+
     mat.index = [extract_sample_id(i) for i in mat.index]
     mat.columns = [extract_sample_id(i) for i in mat.columns]
     mat.to_csv(out_tsv, sep='\t')

@@ -5,10 +5,13 @@ import re
 import glob
 import gzip
 import logging
+from pathlib import Path
 from typing import Tuple, Optional, Callable, Iterable
 
 import pandas as pd
 import numpy as np
+
+from panpiper_kit.fdr import compute_bh_qvalues
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -52,13 +55,14 @@ def open_text(fp: str):
 def build_bh_lookup(p_values: Iterable[float]) -> Optional[Callable[[float], float]]:
     """
     Build Benjamini-Hochberg FDR correction lookup function.
-    
+
+    Uses the canonical compute_bh_qvalues implementation for consistency.
     Given iterable of p-values (NaNs ignored), return a function p -> q_BH (Benjamini–Hochberg).
-    Uses the monotone step-down transform; lookup is O(log m). Returns None if no valid p-values.
-    
+    Lookup is O(log m). Returns None if no valid p-values.
+
     Args:
         p_values: Iterable of p-values (NaNs will be ignored)
-        
+
     Returns:
         Function that maps p-values to q-values, or None if no valid p-values
     """
@@ -66,22 +70,21 @@ def build_bh_lookup(p_values: Iterable[float]) -> Optional[Callable[[float], flo
     m = p.size
     if m == 0:
         return None
-    p_sorted = np.sort(p)  # ascending
-    ranks = np.arange(1, m+1, dtype=float)
-    bh = (m / ranks) * p_sorted
-    # make monotone (from right to left)
-    q_sorted = np.minimum.accumulate(bh[::-1])[::-1]
-    # ensure in [0,1]
-    q_sorted = np.clip(q_sorted, 0.0, 1.0)
+
+    # Use canonical implementation
+    q_values = compute_bh_qvalues(p)
+    p_sorted = np.sort(p)
 
     def q_of(p_single: float) -> float:
         if not np.isfinite(p_single):
             return np.nan
-        # index of first p_j >= p_single
+        # Find index of p_single in sorted p-values
         idx = np.searchsorted(p_sorted, p_single, side='left')
         if idx >= m:  # p_single larger than any observed p
-            return q_sorted[-1]
-        return q_sorted[idx]
+            return q_values[np.argmax(p)]  # Return q-value for largest p
+        # Return q-value for corresponding p-value
+        original_idx = np.where(p == p_sorted[idx])[0][0]
+        return q_values[original_idx]
 
     return q_of
 
@@ -103,7 +106,20 @@ def summarize_pyseer(indir: str, out: str, alpha: float = 0.05,
     logger.info(f"Output will be written to {out}")
     logger.info(f"FDR threshold: {alpha}")
 
+    # Security: Validate glob pattern doesn't contain path traversal
+    if '..' in pattern or pattern.startswith('/') or pattern.startswith('\\'):
+        raise ValueError(f"Unsafe glob pattern (path traversal attempt): {pattern}")
+
     files = sorted(glob.glob(os.path.join(indir, pattern), recursive=True))
+
+    # Security: Verify all matched files are within indir
+    indir_resolved = Path(indir).resolve()
+    for f in files:
+        f_resolved = Path(f).resolve()
+        try:
+            f_resolved.relative_to(indir_resolved)
+        except ValueError:
+            raise ValueError(f"Glob matched file outside directory: {f}")
     if not files:
         logger.warning(f"No files matching {pattern} under {indir}")
         raise SystemExit(f"No files matching {pattern} under {indir}")

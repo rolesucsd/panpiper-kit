@@ -15,15 +15,16 @@ This script does NOT open FASTA files nor run Bakta.
 import argparse
 from pathlib import Path
 from collections import defaultdict
+import gzip
+import numpy as np
+from collections import defaultdict as _dd
 
 try:
     import pandas as pd
 except ImportError:
     pd = None
 
-# Local copies to avoid importing runtime type annotations from annotate_sig_unitigs on Python <3.10
-import gzip
-from collections import defaultdict as _dd
+from panpiper_kit.fdr import compute_bh_qvalues
 
 
 def open_maybe_gz(path):
@@ -31,25 +32,32 @@ def open_maybe_gz(path):
 
 
 def bh_fdr(pvalues):
-    n = len(pvalues)
-    pairs = []
-    for i, p in enumerate(pvalues):
+    """
+    Compute Benjamini-Hochberg q-values from list of p-values.
+
+    This is a compatibility wrapper around the canonical compute_bh_qvalues function.
+    Handles invalid p-values by converting them to 1.0.
+
+    Args:
+        pvalues: List or array of p-values
+
+    Returns:
+        List of q-values (same length as input)
+    """
+    # Convert to numpy array, handling invalid values
+    p_array = []
+    for p in pvalues:
         try:
             pv = float(p)
             if pv < 0 or pv > 1 or not (pv == pv):  # NaN
                 pv = 1.0
         except Exception:
             pv = 1.0
-        pairs.append((i, pv))
-    pairs.sort(key=lambda x: x[1])
-    qvals = [None] * n
-    running_min = 1.0
-    for rank, (idx, p) in enumerate(pairs, start=1):
-        q = p * n / rank
-        if q < running_min:
-            running_min = q
-        qvals[idx] = running_min
-    return [max(0.0, min(1.0, q)) for q in qvals]
+        p_array.append(pv)
+
+    # Use canonical implementation
+    q_array = compute_bh_qvalues(np.array(p_array))
+    return q_array.tolist()
 
 
 def parse_unitig_map(path):

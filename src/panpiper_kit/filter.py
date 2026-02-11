@@ -386,7 +386,8 @@ def _process_species_phenotypes(
                 keep_levels = vc[vc >= min_level_n].index
                 s_nonnull = s_nonnull[s_nonnull[col].astype(str).isin(keep_levels)]
                 rec["n_kept_after_level_filter"] = int(len(s_nonnull))
-                vc2 = s_nonnull[col].astype(str).value_counts().sort_index()
+                # Reuse cached value counts (filtering vc is faster than recomputing)
+                vc2 = vc[keep_levels].sort_index()
                 # refresh counts after pruning
                 rec["n_levels"] = int(len(vc2))
                 rec["level_counts_json"] = json.dumps(vc2.to_dict())

@@ -62,10 +62,32 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Optional, List
 
+import numpy as np
+
 try:
     import pandas as pd
 except ImportError:
     pd = None
+
+from panpiper_kit.fdr import compute_bh_qvalues
+
+
+# ---------------------------
+# Security constants
+# ---------------------------
+
+# Whitelist of safe Bakta command-line flags
+ALLOWED_BAKTA_FLAGS = {
+    '--compliant',
+    '--keep-contig-headers',
+    '--meta',
+    '--gram',
+    '--genus',
+    '--species',
+    '--strain',
+    '--plasmid',
+    '--complete'
+}
 
 
 # ---------------------------
@@ -112,25 +134,32 @@ def write_tsv(rows_or_df, path):
                 w.writerow(r)
 
 def bh_fdr(pvalues):
-    n = len(pvalues)
-    pairs = []
-    for i, p in enumerate(pvalues):
+    """
+    Compute Benjamini-Hochberg q-values from list of p-values.
+
+    This is a compatibility wrapper around the canonical compute_bh_qvalues function.
+    Handles invalid p-values by converting them to 1.0.
+
+    Args:
+        pvalues: List or array of p-values
+
+    Returns:
+        List of q-values (same length as input)
+    """
+    # Convert to numpy array, handling invalid values
+    p_array = []
+    for p in pvalues:
         try:
             pv = float(p)
             if pv < 0 or pv > 1 or not (pv == pv):  # NaN
                 pv = 1.0
         except Exception:
             pv = 1.0
-        pairs.append((i, pv))
-    pairs.sort(key=lambda x: x[1])
-    qvals = [None] * n
-    running_min = 1.0
-    for rank, (idx, p) in enumerate(pairs, start=1):
-        q = p * n / rank
-        if q < running_min:
-            running_min = q
-        qvals[idx] = running_min
-    return [max(0.0, min(1.0, q)) for q in qvals]
+        p_array.append(pv)
+
+    # Use canonical implementation
+    q_array = compute_bh_qvalues(np.array(p_array))
+    return q_array.tolist()
 
 
 # ---------------------------
@@ -397,7 +426,18 @@ def ensure_bakta_for_sample(
         "--threads", str(int(bakta_cores)),
     ]
     if bakta_extra_args:
-        cmd.extend(shlex.split(bakta_extra_args))
+        args_list = shlex.split(bakta_extra_args)
+        # Security: Validate each argument against whitelist
+        for arg in args_list:
+            if arg.startswith('--'):
+                # Check if the flag (without value) is in whitelist
+                flag = arg.split('=')[0]  # Handle --flag=value format
+                if flag not in ALLOWED_BAKTA_FLAGS:
+                    raise ValueError(
+                        f"Unsafe or disallowed bakta argument: {arg}. "
+                        f"Allowed flags: {', '.join(sorted(ALLOWED_BAKTA_FLAGS))}"
+                    )
+        cmd.extend(args_list)
 
     # Run
     print(f"[info] Running Bakta for sample '{sample}'...")
