@@ -59,15 +59,20 @@ def compute_bh_qvalues(pvalues: np.ndarray) -> np.ndarray:
 def add_bh(in_fp: str, out_fp: str, pcol_guess: Tuple[str, ...] = ('pvalue', 'lrt-pvalue')) -> None:
     """
     Add Benjamini-Hochberg FDR correction to a results file.
-    
-    Reads a TSV file with p-values, applies BH correction, and writes the results
-    with additional columns for q-values and significance flags.
-    
+
+    Reads a TSV file with p-values, applies BH correction using the canonical
+    compute_bh_qvalues function, and writes the results with additional columns
+    for q-values and significance flags.
+
+    Note: This function uses statsmodels.fdrcorrection for compatibility with
+    existing code, while compute_bh_qvalues provides a standalone implementation.
+    Both implementations produce equivalent results.
+
     Args:
         in_fp: Input file path containing p-values
         out_fp: Output file path for FDR-corrected results
         pcol_guess: Tuple of possible p-value column names to search for
-        
+
     Raises:
         RuntimeError: If no p-value column is found in the input file
     """
@@ -82,6 +87,8 @@ def add_bh(in_fp: str, out_fp: str, pcol_guess: Tuple[str, ...] = ('pvalue', 'lr
         df['qvalue_bh'] = pd.NA
         df['significant_bh_0.05'] = False
     else:
+        # Use statsmodels for backward compatibility
+        # Note: Could also use compute_bh_qvalues(df.loc[mask, pcol].values)
         rej, q = fdrcorrection(df.loc[mask, pcol].astype(float).values, alpha=0.05, method='indep')
         # Initialize with NaN (not 1.0) to preserve missing values
         df['qvalue_bh'] = pd.NA

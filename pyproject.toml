@@ -63,3 +63,6 @@ dev = [
 
 [project.scripts]
 ppk-run = "panpiper_kit.cli:main"
+ppk-annotate = "panpiper_kit.annotate_sig_unitigs:main"
+ppk-plan-annotate = "panpiper_kit.plan_annotate_sig_unitigs:main"
+ppk-summarize = "panpiper_kit.summarize_pyseer:main"

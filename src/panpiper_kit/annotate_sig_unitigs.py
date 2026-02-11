@@ -70,6 +70,7 @@ except ImportError:
     pd = None
 
 from panpiper_kit.fdr import compute_bh_qvalues
+from panpiper_kit.unitig_utils import open_maybe_gz, parse_unitig_map, bh_fdr
 
 
 # ---------------------------
@@ -93,9 +94,6 @@ ALLOWED_BAKTA_FLAGS = {
 # ---------------------------
 # Small utilities
 # ---------------------------
-
-def open_maybe_gz(path):
-    return gzip.open(path, "rt") if str(path).endswith(".gz") else open(path, "r")
 
 def reverse_complement(seq):
     comp = str.maketrans("ACGTacgtNn", "TGCAtgcaNn")
@@ -133,58 +131,9 @@ def write_tsv(rows_or_df, path):
             for r in rows:
                 w.writerow(r)
 
-def bh_fdr(pvalues):
-    """
-    Compute Benjamini-Hochberg q-values from list of p-values.
-
-    This is a compatibility wrapper around the canonical compute_bh_qvalues function.
-    Handles invalid p-values by converting them to 1.0.
-
-    Args:
-        pvalues: List or array of p-values
-
-    Returns:
-        List of q-values (same length as input)
-    """
-    # Convert to numpy array, handling invalid values
-    p_array = []
-    for p in pvalues:
-        try:
-            pv = float(p)
-            if pv < 0 or pv > 1 or not (pv == pv):  # NaN
-                pv = 1.0
-        except Exception:
-            pv = 1.0
-        p_array.append(pv)
-
-    # Use canonical implementation
-    q_array = compute_bh_qvalues(np.array(p_array))
-    return q_array.tolist()
-
-
 # ---------------------------
 # Parsers
 # ---------------------------
-
-def parse_unitig_map(path):
-    """
-    UNITIG | sampleA:1 sampleB:1 ...
-    """
-    unitig_to_samples = defaultdict(set)
-    with open_maybe_gz(path) as fh:
-        for ln in fh:
-            ln = ln.strip()
-            if not ln or ln.startswith("#") or " | " not in ln:
-                continue
-            unitig, rhs = ln.split(" | ", 1)
-            unitig = unitig.strip()
-            if not unitig:
-                continue
-            for tok in rhs.strip().split():
-                s = tok.split(":", 1)[0].strip()
-                if s:
-                    unitig_to_samples[unitig].add(s)
-    return unitig_to_samples
 
 def load_bakta_tsv(anno_path):
     """
