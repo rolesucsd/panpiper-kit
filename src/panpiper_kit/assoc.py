@@ -22,6 +22,33 @@ _DM_IDS: Optional[List[str]] = None
 _PCOA_CACHE: Dict[str, Tuple[np.ndarray, np.ndarray, Dict]] = {}  # Cache PCoA results
 
 
+def _warn_if_no_overlap(dm_ids, pheno_samples, context: str) -> None:
+    """
+    Log a loud, actionable error when a distance matrix and a phenotype table
+    share no sample IDs at all.
+
+    An empty intersection between two non-empty inputs is always an ID-namespace
+    mismatch, not a biological result. Reporting it here turns a silent
+    ``n_samples=0`` row into something visible in the log.
+
+    Args:
+        dm_ids: Sample IDs from the distance matrix
+        pheno_samples: Sample IDs from the phenotype table
+        context: Human-readable identifier for the comparison (species/phenotype)
+    """
+    if not len(dm_ids) or not len(pheno_samples):
+        return
+    logger.error(
+        "%s: distance matrix and phenotype file share 0 sample IDs "
+        "(%d matrix IDs, %d phenotype IDs). This is an ID-namespace mismatch, "
+        "not an absence of signal. Example matrix IDs: %s. Example phenotype IDs: %s. "
+        "The distance matrix is keyed by FASTA basename; the phenotype 'sample' column "
+        "comes from column 2 of --ani-map. These must be the same identifiers.",
+        context, len(dm_ids), len(pheno_samples),
+        list(dm_ids)[:3], list(pheno_samples)[:3],
+    )
+
+
 class DistanceMatrixAnalyzer:
     """
     Encapsulates distance matrix analysis to avoid global state.
@@ -73,6 +100,9 @@ class DistanceMatrixAnalyzer:
         # Keep samples in matrix order
         ph_samples = set(ph['sample'])
         keep_ids = [sid for sid in self.sample_ids if sid in ph_samples]
+
+        if not keep_ids:
+            _warn_if_no_overlap(self.sample_ids, ph_samples, "align_common")
 
         if len(keep_ids) < MIN_SAMPLES_DISTANCE_TEST:
             return np.empty((0, 0)), np.array([]), []
@@ -180,6 +210,9 @@ def _align_common(phenotype_df: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray, L
     # Pre-compute set for O(1) lookup instead of O(n)
     phenotype_samples = set(phenotype_df['sample'])
     keep_ids = [sample_id for sample_id in _DM_IDS if sample_id in phenotype_samples]
+
+    if not keep_ids:
+        _warn_if_no_overlap(_DM_IDS, phenotype_samples, "align_dm_pheno")
     if len(keep_ids) < MIN_SAMPLES_DISTANCE_TEST:
         return np.empty((0, 0)), np.array([]), []
     phenotype_values = phenotype_df.set_index('sample').loc[keep_ids, 'phenotype'].values
@@ -596,7 +629,10 @@ def _permutation_test(pheno_tsv: str, typ: str, perms: int, mode: str = "auto") 
     ph = pd.read_csv(pheno_tsv, sep="\t").dropna(subset=['phenotype'])
 
     # Align in distance-matrix order
-    keep = [sid for sid in _DM.index if sid in set(ph['sample'])]
+    ph_samples = set(ph['sample'])
+    keep = [sid for sid in _DM.index if sid in ph_samples]
+    if not keep:
+        _warn_if_no_overlap(_DM.index, ph_samples, os.path.basename(str(pheno_tsv)))
     if len(keep) < MIN_SAMPLES_DISTANCE_TEST:
         return {"n_samples": len(keep), "test": "NA", "stat": np.nan, "pvalue": np.nan, "permutations": perms}
 

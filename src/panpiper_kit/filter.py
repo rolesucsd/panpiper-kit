@@ -20,6 +20,9 @@ DEFAULT_MIN_UNIQUE_CONT = 10
 DEFAULT_IQR_FACTOR = 3.0  # Tukey fence multiplier for outlier detection
 MIN_NUMERIC_FRACTION = 0.5  # Minimum fraction of values that must be numeric for coercion
 
+# Trailing sub-bin suffix produced by some binning/refinement tools (e.g. '..._sub')
+_SUB_BIN_SUFFIX_RE = re.compile(r'_sub\d*$', re.IGNORECASE)
+
 def _filter_numeric_outliers(
     s: pd.Series,
     iqr_factor: float = DEFAULT_IQR_FACTOR,
@@ -104,33 +107,45 @@ def _pick_col(cols_lower_map: Dict[str, str], candidates: List[str]) -> str:
 def _extract_patient_from_bin(bin_name: str) -> str:
     """
     Extract patient name from bin identifier.
-    
+
     Handles multiple formats:
     - {patient}_{binner}_{bin_identifier} -> returns {patient}
     - {patient}.{id}_{binner}_{bin_identifier} -> returns {patient}.{id}
-    
+    - any of the above with a trailing sub-bin suffix (_sub, _sub1, ...)
+
     Examples:
     - Patient1_metabat_001 -> Patient1
     - 10317.X00179178_CONCOCT_bin.40 -> 10317.X00179178
-    
+    - G-0948_COMEBinRefined_24198_sub -> G-0948
+
     Args:
         bin_name: Bin identifier string
-        
+
     Returns:
         Patient name extracted from bin identifier
     """
+    # Strip trailing sub-bin suffixes (_sub, _sub1, _sub_2, ...) before positional
+    # parsing. Without this the suffix shifts the split and the binner name leaks
+    # into the patient ID, silently dropping those genomes at the metadata merge.
+    name = bin_name
+    while True:
+        stripped = _SUB_BIN_SUFFIX_RE.sub('', name)
+        if stripped == name or not stripped:
+            break
+        name = stripped
+
     # Split by underscore
-    parts = bin_name.split('_')
-    
-    # If we have at least 2 parts, the patient is everything before the last 2 parts
+    parts = name.split('_')
+
+    # With at least 3 fields, the patient is everything before the final two
     # This handles both formats:
     # - Patient1_metabat_001 -> Patient1
     # - 10317.X00179178_CONCOCT_bin.40 -> 10317.X00179178
-    if len(parts) >= 2:
+    if len(parts) >= 3:
         return '_'.join(parts[:-2])
     else:
-        # Fallback: if only one part, return the whole thing
-        return bin_name
+        # Fallback: too few fields to strip binner + bin id, return as-is
+        return name
 
 
 def _clean_metadata_values(series: pd.Series, custom_missing_values: Optional[List[str]] = None) -> pd.Series:
