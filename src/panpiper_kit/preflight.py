@@ -17,6 +17,8 @@ a message naming the offending IDs.
 """
 
 import logging
+import os
+import re
 from typing import Dict, List, Optional, Sequence
 
 import pandas as pd
@@ -28,6 +30,8 @@ logger = logging.getLogger(__name__)
 # Fraction of IDs that must join before a partial mismatch is escalated to an error.
 DEFAULT_MIN_OVERLAP_FRAC = 0.0
 
+_FA_EXT_RE = re.compile(r'\.(fa|fna|fasta)(\.gz)?$', re.IGNORECASE)
+
 
 class PreflightError(RuntimeError):
     """Raised when the input files do not share a common identifier namespace."""
@@ -36,6 +40,40 @@ class PreflightError(RuntimeError):
 def _fmt(ids: Sequence[str], n: int = 3) -> str:
     """Format a few example IDs for an error message."""
     return ', '.join(repr(str(i)) for i in list(ids)[:n]) or '(none)'
+
+
+
+def _check_path_labels(sample_to_path: Dict[str, str], errors: List[str]) -> None:
+    """
+    Verify that each genome's downstream label matches the ID it is keyed by.
+
+    mash and unitig-caller label samples by the basename of the path they are
+    handed, not by the dictionary key. If the two disagree -- most often because
+    the genomes directory holds symlinks whose targets use a different naming
+    scheme -- phenotypes end up keyed to one namespace and distances to another.
+
+    Args:
+        sample_to_path: Mapping of sample ID to FASTA path
+        errors: List that failure messages are appended to
+    """
+    mismatched = [
+        (sid, path) for sid, path in sample_to_path.items()
+        if _FA_EXT_RE.sub('', os.path.basename(path)) != sid
+    ]
+    if not mismatched:
+        return
+
+    examples = '\n'.join(
+        f"      {sid!r} -> {path}" for sid, path in mismatched[:3]
+    )
+    errors.append(
+        f"genome path labels: {len(mismatched)} of {len(sample_to_path)} genome "
+        f"paths have a basename that differs from their sample ID.\n"
+        f"    mash and unitig-caller name samples after the path basename, so these "
+        f"would be keyed differently than the phenotype files.\n{examples}\n"
+        f"    If --genomes contains symlinks, panpiper-kit uses the link name; check "
+        f"that the links are named as you intend."
+    )
 
 
 def _check_join(
@@ -126,6 +164,8 @@ def validate_identifiers(
 
     ani_ids = ani['sample'].astype(str).unique()
     fasta_ids = list(sample_to_path.keys())
+
+    _check_path_labels(sample_to_path, errors)
 
     n_genomes = _check_join(
         name="ani_map -> genomes",

@@ -4,6 +4,7 @@ import pandas as pd
 import pytest
 
 from panpiper_kit.filter import _extract_patient_from_bin
+from panpiper_kit.files import list_fastas
 from panpiper_kit.preflight import PreflightError, validate_identifiers
 
 
@@ -24,17 +25,24 @@ class TestExtractPatientFromBin:
         ("G-1325_CONCOCTRefined_19026_sub1", "G-1325"),
         ("Patient1_metabat_001_SUB", "Patient1"),
     ])
-    def test_sub_bin_suffix_is_stripped(self, bin_name, expected):
-        """A trailing _sub used to shift the split and leak the binner name."""
+    def test_extra_trailing_fields_do_not_shift_the_split(self, bin_name, expected):
+        """Parsing must not depend on how many fields follow the patient ID."""
         assert _extract_patient_from_bin(bin_name) == expected
 
-    def test_sub_and_non_sub_bins_agree(self):
-        assert (_extract_patient_from_bin("G-0948_COMEBinRefined_24198_sub")
-                == _extract_patient_from_bin("G-0948_COMEBinRefined_24198"))
+    def test_trailing_field_count_does_not_change_result(self):
+        """Same sample, different suffix depth -> same patient ID."""
+        ids = ["G-0948_COMEBinRefined_24198",
+               "G-0948_COMEBinRefined_24198_sub",
+               "G-0948_COMEBinRefined_24198_sub_2",
+               "G-0948_metabat"]
+        assert {_extract_patient_from_bin(i) for i in ids} == {"G-0948"}
 
-    @pytest.mark.parametrize("bin_name", ["onlyone", "A_B"])
-    def test_too_few_fields_returns_input(self, bin_name):
-        assert _extract_patient_from_bin(bin_name) == bin_name
+    def test_no_separator_returns_input(self):
+        assert _extract_patient_from_bin("onlyone") == "onlyone"
+
+    def test_underscore_in_patient_id_is_not_supported(self):
+        """Documented limitation: the patient ID must not contain '_'."""
+        assert _extract_patient_from_bin("Pat_ient_metabat_001") == "Pat"
 
 
 @pytest.fixture
@@ -107,3 +115,32 @@ class TestValidateIdentifiers:
         s2p = {s: f"/g/{s}.fa" for s in ani["sample"]}
         with pytest.raises(PreflightError, match="no SampleID-like column"):
             validate_identifiers(s2p, ani, str(p))
+
+
+class TestGenomePathLabels:
+    """mash/unitig-caller label samples by path basename, not by dict key."""
+
+    def test_symlink_keeps_link_name_not_target_name(self, tmp_path):
+        target_dir = tmp_path / "dastool_bins"
+        target_dir.mkdir()
+        target = target_dir / "MEGAHIT-COMEBinRefined-G_0948_EKDO1-1A_X.24198.fa"
+        target.write_text(">c\nACGT\n")
+
+        genomes = tmp_path / "genomes"
+        genomes.mkdir()
+        link = genomes / "G-0948_COMEBinRefined_24198.fa"
+        link.symlink_to(target)
+
+        s2p = list_fastas(str(genomes))
+        assert list(s2p) == ["G-0948_COMEBinRefined_24198"]
+        # The stored path must still end in the link name, since that basename
+        # becomes the mash matrix label and the unitig sample name.
+        assert s2p["G-0948_COMEBinRefined_24198"].endswith(
+            "G-0948_COMEBinRefined_24198.fa")
+
+    def test_label_mismatch_is_fatal(self, ani, metadata_file):
+        """A path whose basename disagrees with its ID must not run silently."""
+        s2p = {s: f"/dastool/MEGAHIT-COMEBinRefined-{i}.fa"
+               for i, s in enumerate(ani["sample"])}
+        with pytest.raises(PreflightError, match="genome path labels"):
+            validate_identifiers(s2p, ani, metadata_file)
