@@ -16,9 +16,13 @@ DEFAULT_MAX_MISSING_FRAC = 0.2
 DEFAULT_MIN_LEVEL_N = 3
 DEFAULT_MIN_UNIQUE_CONT = 10
 
+# Outlier detection constants
+DEFAULT_IQR_FACTOR = 3.0  # Tukey fence multiplier for outlier detection
+MIN_NUMERIC_FRACTION = 0.5  # Minimum fraction of values that must be numeric for coercion
+
 def _filter_numeric_outliers(
     s: pd.Series,
-    iqr_factor: float = 3.0,
+    iqr_factor: float = DEFAULT_IQR_FACTOR,
 ) -> Tuple[pd.Series, int, Dict[str, float]]:
     """
     For numeric series, mark extreme outliers as NaN.
@@ -59,7 +63,7 @@ def _series_numeric_coerce(s: pd.Series) -> pd.Series:
     coerced = pd.to_numeric(s, errors="coerce")
     # Heuristic: if at least half of non-null values convert, treat as numeric
     non_null = s.notna().sum()
-    if non_null > 0 and coerced.notna().sum() >= 0.5 * non_null:
+    if non_null > 0 and coerced.notna().sum() >= MIN_NUMERIC_FRACTION * non_null:
         return coerced
     return s
 
@@ -100,34 +104,28 @@ def _pick_col(cols_lower_map: Dict[str, str], candidates: List[str]) -> str:
 def _extract_patient_from_bin(bin_name: str) -> str:
     """
     Extract patient name from bin identifier.
-    
-    Handles multiple formats:
-    - {patient}_{binner}_{bin_identifier} -> returns {patient}
-    - {patient}.{id}_{binner}_{bin_identifier} -> returns {patient}.{id}
-    
+
+    The patient is the first '_'-separated field of the bin identifier; every
+    field after it belongs to the binner (binner name, bin number, and any
+    sub-bin suffix). This is naming-scheme agnostic: it does not assume a fixed
+    number of trailing fields, so bin identifiers with extra suffixes parse the
+    same as those without.
+
+    The one requirement is that patient IDs must not themselves contain '_'.
+
     Examples:
     - Patient1_metabat_001 -> Patient1
     - 10317.X00179178_CONCOCT_bin.40 -> 10317.X00179178
-    
+    - G-0796_COMEBinRefined_21038 -> G-0796
+    - G-0948_COMEBinRefined_24198_sub -> G-0948
+
     Args:
         bin_name: Bin identifier string
-        
+
     Returns:
         Patient name extracted from bin identifier
     """
-    # Split by underscore
-    parts = bin_name.split('_')
-    
-    # If we have at least 2 parts, the patient is everything before the last 2 parts
-    # This handles both formats:
-    # - Patient1_metabat_001 -> Patient1
-    # - 10317.X00179178_CONCOCT_bin.40 -> 10317.X00179178
-    if len(parts) >= 2:
-        return '_'.join(parts[:-2])
-    else:
-        # Fallback: if only one part, return the whole thing
-        return bin_name
-
+    return bin_name.split('_', 1)[0]
 
 def _clean_metadata_values(series: pd.Series, custom_missing_values: Optional[List[str]] = None) -> pd.Series:
     """
@@ -209,7 +207,85 @@ def filter_by_checkm(s2p: Dict[str, str], checkm_fp: str, comp_min: float, cont_
     kept = {s: p for s, p in s2p.items() if s in keep_names}
     return kept
 
-def _is_valid_phenotype(s: pd.Series, typ: str, max_missing_frac: float, min_n: int, 
+def _normalize_binary_phenotype(phenotype_series: pd.Series) -> pd.Series:
+    """
+    Normalize binary phenotype values to 0/1.
+
+    Handles various representations of binary values and maps them consistently
+    to {0, 1}. If exactly two unique values exist, maps them deterministically
+    by sorted order. Otherwise uses boolean-like mapping (true/false, yes/no, etc.).
+
+    Args:
+        phenotype_series: Series with binary phenotype values
+
+    Returns:
+        Series with values mapped to 0 or 1, with unmappable values set to NA
+    """
+    raw_values = phenotype_series.dropna()
+    unique_vals = sorted(pd.unique(raw_values.astype(str).str.strip()))
+
+    if len(unique_vals) == 2:
+        # Map deterministically to {0,1} by sorted label order
+        label_to_int = {unique_vals[0]: 0, unique_vals[1]: 1}
+        return raw_values.astype(str).str.strip().map(label_to_int)
+    else:
+        # Fallback to boolean-like mapping
+        val_str = raw_values.astype(str).str.strip().str.lower()
+        true_like = {"true", "t", "yes", "y", "1"}
+        false_like = {"false", "f", "no", "n", "0"}
+        mapped = pd.Series(pd.NA, index=val_str.index)
+        mapped[val_str.isin(true_like)] = 1
+        mapped[val_str.isin(false_like)] = 0
+        return mapped
+
+
+def _filter_categorical_levels(
+    phenotype_df: pd.DataFrame,
+    col: str,
+    min_level_n: int
+) -> Tuple[pd.DataFrame, pd.Series]:
+    """
+    Filter categorical phenotype levels by minimum sample count.
+
+    Args:
+        phenotype_df: DataFrame containing phenotype column
+        col: Column name to filter
+        min_level_n: Minimum samples required per level
+
+    Returns:
+        Tuple of (filtered_dataframe, value_counts_series)
+    """
+    value_counts = phenotype_df[col].astype(str).value_counts().sort_index()
+    keep_levels = value_counts[value_counts >= min_level_n].index
+    filtered_df = phenotype_df[phenotype_df[col].astype(str).isin(keep_levels)]
+    # Recompute value counts after filtering
+    filtered_counts = value_counts[keep_levels].sort_index()
+    return filtered_df, filtered_counts
+
+
+def _compute_continuous_stats(series: pd.Series) -> Dict[str, Optional[float]]:
+    """
+    Compute summary statistics for continuous phenotype.
+
+    Args:
+        series: Continuous phenotype series
+
+    Returns:
+        Dictionary with mean, sd, min, max statistics
+    """
+    coerced = _series_numeric_coerce(series)
+    mu = coerced.mean()
+    sd = coerced.std(ddof=0)
+
+    return {
+        "continuous_mean": float(mu) if pd.notna(mu) else None,
+        "continuous_sd": float(sd) if pd.notna(sd) else None,
+        "continuous_min": float(coerced.min()) if len(coerced) else None,
+        "continuous_max": float(coerced.max()) if len(coerced) else None,
+    }
+
+
+def _is_valid_phenotype(s: pd.Series, typ: str, max_missing_frac: float, min_n: int,
                        min_level_n: int, min_unique_cont: int) -> bool:
     """
     Check if a phenotype series meets the filtering criteria.
@@ -351,22 +427,8 @@ def _process_species_phenotypes(
         if typ in ("binary", "categorical"):
             # Normalize binary values to 0/1 and drop ambiguous values
             if typ == "binary":
-                # If there are exactly two unique non-null values but they are not boolean-like,
-                # map deterministically to {0,1} by sorted label order
-                raw_nonnull = s_nonnull[col].dropna()
-                unique_vals = sorted(pd.unique(raw_nonnull.astype(str).str.strip()))
-                if len(unique_vals) == 2:
-                    label_to_int = {unique_vals[0]: 0, unique_vals[1]: 1}
-                    s_nonnull[col] = raw_nonnull.astype(str).str.strip().map(label_to_int)
-                else:
-                    # fallback to boolean-like mapping
-                    val_str = s_nonnull[col].astype(str).str.strip().str.lower()
-                    true_like = {"true", "t", "yes", "y", "1"}
-                    false_like = {"false", "f", "no", "n", "0"}
-                    mapped = pd.Series(pd.NA, index=val_str.index)
-                    mapped[val_str.isin(true_like)] = 1
-                    mapped[val_str.isin(false_like)] = 0
-                    s_nonnull[col] = mapped
+                normalized = _normalize_binary_phenotype(s_nonnull[col])
+                s_nonnull[col] = normalized
                 # Drop rows that could not be mapped
                 s_nonnull = s_nonnull.dropna(subset=[col])
 
@@ -383,16 +445,13 @@ def _process_species_phenotypes(
 
             # For categorical, drop levels < min_level_n then require >=2 levels and N>=min_n
             if typ == "categorical":
-                keep_levels = vc[vc >= min_level_n].index
-                s_nonnull = s_nonnull[s_nonnull[col].astype(str).isin(keep_levels)]
+                s_nonnull, filtered_counts = _filter_categorical_levels(s_nonnull, col, min_level_n)
                 rec["n_kept_after_level_filter"] = int(len(s_nonnull))
-                # Reuse cached value counts (filtering vc is faster than recomputing)
-                vc2 = vc[keep_levels].sort_index()
                 # refresh counts after pruning
-                rec["n_levels"] = int(len(vc2))
-                rec["level_counts_json"] = json.dumps(vc2.to_dict())
-                if len(vc2) < 2 or len(s_nonnull) < min_n:
-                    rec["fail_reason"] = f"categorical: levels={len(vc2)}, n={len(s_nonnull)}, need_levels>=2 n>={min_n}"
+                rec["n_levels"] = int(len(filtered_counts))
+                rec["level_counts_json"] = json.dumps(filtered_counts.to_dict())
+                if len(filtered_counts) < 2 or len(s_nonnull) < min_n:
+                    rec["fail_reason"] = f"categorical: levels={len(filtered_counts)}, n={len(s_nonnull)}, need_levels>=2 n>={min_n}"
                     summary_records.append(rec)
                     continue
 
@@ -402,12 +461,9 @@ def _process_species_phenotypes(
                 rec["fail_reason"] = f"continuous: nunique={s_vals.nunique()}, n={len(s_vals)}, need_nunique>={min_unique_cont} n>={min_n}"
                 summary_records.append(rec)
                 continue
-            mu = s_vals.mean()
-            sd = s_vals.std(ddof=0)
-            rec["continuous_mean"] = float(mu) if pd.notna(mu) else None
-            rec["continuous_sd"] = float(sd) if pd.notna(sd) else None
-            rec["continuous_min"] = float(s_vals.min()) if len(s_vals) else None
-            rec["continuous_max"] = float(s_vals.max()) if len(s_vals) else None
+            # Compute statistics
+            stats = _compute_continuous_stats(s_nonnull[col])
+            rec.update(stats)
 
         # If we got here, it passes type-specific checks
         rec["passes_filters"] = True

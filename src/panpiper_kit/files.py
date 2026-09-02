@@ -52,13 +52,19 @@ def list_fastas(genomes_dir: str) -> Dict[str, str]:
     pdir = pathlib.Path(genomes_dir)
     if not pdir.exists():
         raise RuntimeError(f"Genomes dir not found: {genomes_dir}")
+    # Resolve the containing directory, but NOT the entries inside it. When the
+    # genomes dir holds symlinks, resolving each entry would replace the link name
+    # with the target's name; mash and unitig-caller label samples by the basename
+    # of the path they are given, so the run would silently switch to the target
+    # naming scheme while phenotypes stayed on the link names.
+    pdir_abs = pdir.resolve()
     m = {}
     for p in pdir.iterdir():
         if p.is_file() and FA_RE.search(p.name):
             b = FA_RE.sub('', p.name)
             if b in m:
                 raise RuntimeError(f"Duplicate sample basename '{b}' from {m[b]} and {p}")
-            m[b] = str(p.resolve())
+            m[b] = str(pdir_abs / p.name)
     if not m:
         raise RuntimeError("No FASTA files found.")
     return dict(sorted(m.items()))

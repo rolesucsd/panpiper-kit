@@ -12,6 +12,7 @@ from typing import Dict, List, Tuple, Any, NamedTuple
 from typing_extensions import Literal
 
 from .files import list_fastas, ensure_dir, run, safe_sample_name
+from .preflight import validate_identifiers, PreflightError
 from .filter import filter_metadata_per_species, filter_by_checkm
 from .mash import mash_within_species
 from .assoc import run_assoc, PhenotypeJob, _init_worker as _assoc_init_worker, _permutation_test as _assoc_permutation_test
@@ -723,9 +724,12 @@ def _run_unitigs_for_species(species: str, samples: List[str], config: AnalysisC
 
     # Create refs file
     ref_txt = species_output_dir / 'refs.txt'
-    if not ref_txt.exists():
-        with open(ref_txt, 'w') as fh:
-            fh.write('\n'.join(paths))
+    # Always rewrite: an existing refs.txt may come from an earlier run with a
+    # different --genomes directory, which would silently key mash/unitigs to a
+    # different ID namespace than the phenotype files.
+    ref_txt.parent.mkdir(parents=True, exist_ok=True)
+    with open(ref_txt, 'w') as fh:
+        fh.write('\n'.join(paths))
 
     uc_pyseer = ensure_unitigs(
         str(ref_txt), str(config.unitig_dir / species),
@@ -1737,6 +1741,10 @@ def main() -> None:
     ap.add_argument('--max-axes', type=int, default=10, help='PC axes used in fast mode')
     ap.add_argument('--mash-k', type=int, default=18, help='Mash k-mer size')
     ap.add_argument('--mash-s', type=int, default=10000, help='Mash sketch size')
+    ap.add_argument('--skip-preflight', action='store_true',
+                    help='skip the sample-ID consistency checks between --genomes, --ani-map and --metadata')
+    ap.add_argument('--preflight-min-overlap', type=float, default=0.0,
+                    help='fail preflight unless at least this fraction of IDs join at each step (default: 0.0, i.e. fail only on a complete mismatch)')
     ap.add_argument('--kmer', type=int, default=31, help='unitig-caller k-mer size')
     ap.add_argument('--maf', type=float, default=0.05, help='pyseer min allele freq for unitigs')
     ap.add_argument('--pair-min-n', type=int, default=20, help='minimum samples per group for pairwise tests')
@@ -1772,6 +1780,21 @@ def main() -> None:
 
     # Load and validate data
     sample_to_path, ani = _load_and_validate_data(args)
+
+    # Preflight: the genomes/ANI map/metadata must share one ID namespace, otherwise
+    # every downstream test reports n_samples=0 and pyseer finds no samples. Fail here
+    # rather than emitting empty results that look like "no significant associations".
+    if args.skip_preflight:
+        logger.warning("Preflight identifier checks skipped (--skip-preflight)")
+    else:
+        try:
+            validate_identifiers(
+                sample_to_path, ani, args.metadata,
+                min_overlap_frac=args.preflight_min_overlap,
+            )
+        except PreflightError as e:
+            logger.fatal(str(e))
+            sys.exit(1)
 
     # Build species -> sample list early to restrict phenotype generation to eligible species
     species_to_samples_all = _build_species_sample_map(ani, sample_to_path, args.min_n)

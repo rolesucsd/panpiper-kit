@@ -46,6 +46,7 @@ def _square_from_pairs(pairs_tsv: str, out_tsv: str) -> None:
             )
         sample_ids[sid] = path
 
+    # Apply the mapping to index and columns
     mat.index = [extract_sample_id(i) for i in mat.index]
     mat.columns = [extract_sample_id(i) for i in mat.columns]
     mat.to_csv(out_tsv, sep='\t')

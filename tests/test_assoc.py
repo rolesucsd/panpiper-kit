@@ -12,7 +12,7 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 from panpiper_kit.assoc import (
-    PhenotypeJob, _align_common, _cont_distance, _pcoa_scores,
+    PhenotypeJob, _align_common, _continuous_phenotype_distance, _pcoa_scores,
     _fast_test, _permutation_test, _adaptive_exact, run_assoc
 )
 
@@ -84,20 +84,20 @@ def test_align_common_insufficient_samples():
         assert len(ids) == 0
 
 
-def test_cont_distance():
-    """Test _cont_distance function."""
+def test_continuous_phenotype_distance():
+    """Test _continuous_phenotype_distance function."""
     # Test with normal data
     vec = pd.Series([1.0, 2.0, 3.0, 4.0, 5.0])
-    D = _cont_distance(vec)
-    
+    D = _continuous_phenotype_distance(vec)
+
     assert D.shape == (5, 5)
     assert np.allclose(D.diagonal(), 0.0)  # Diagonal should be 0
     assert (D == D.T).all()  # Should be symmetric
-    
+
     # Test with constant data
     vec_constant = pd.Series([1.0, 1.0, 1.0])
-    D_constant = _cont_distance(vec_constant)
-    
+    D_constant = _continuous_phenotype_distance(vec_constant)
+
     assert D_constant.shape == (3, 3)
     assert (D_constant == 0.0).all()  # All distances should be 0
 
