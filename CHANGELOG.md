@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- `ppk-annotate`: `--q-thresh` was ignored and the top 10,000 unitigs by p-value were
+  always annotated. Unitigs are now selected by BH-FDR (`q_filter < q` or `q_lrt < q`);
+  `--max-unitigs` is an optional cap (default: none).
+
+### Changed
+- `ppk-annotate` BLASTs all unitigs of a sample in one batch instead of one `blastn`
+  process per unitig.
+- `_summary.tsv` adds `n_carriers`/`carriers` (every genome containing the unitig, from
+  `--unitig-map`) and the Pyseer `af`, `beta`, p- and q-values. `n_samples` still counts
+  only the genome the unitig was annotated in.
+
 ## [0.1.0] - 2024-09-17
 
 ### Added

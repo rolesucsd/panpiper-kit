@@ -7,7 +7,9 @@ Single-Pyseer → (FDR) → unitig→FASTA coordinates → Bakta CDS annotation.
 Features
 --------
 - One Pyseer file only (enforced).
-- BH-FDR on both p-value columns; keep if q_filter < q || q_lrt < q.
+- BH-FDR on both p-value columns; keep if q_filter < q || q_lrt < q
+  (optionally capped with --max-unitigs).
+- BLAST is batched: one call per sample, not per unitig.
 - Unitig→samples map (no header): "UNITIG | sampleA:1 sampleB:1 ..."
 - For each needed sample:
     * Ensures Bakta TSV exists (skips if present)
@@ -21,7 +23,9 @@ Outputs
 <out_prefix>_long.tsv:
   unitig  sample  contig  pid  start  end  strand  evalue  bitscore  length  coding  locus_tag  gene  product  dbxrefs
 <out_prefix>_summary.tsv:
-  unitig  n_samples  samples  annotations
+  unitig  n_samples  samples  annotations  n_carriers  carriers  af  beta  ...
+  (n_samples/samples = genome the unitig was annotated in; n_carriers/carriers =
+  every genome containing it, from --unitig-map)
 
 Assumptions
 -----------
@@ -274,6 +278,92 @@ def run_blast_unitig(unitig, fasta_path, blast_bin="blastn", evalue=1e-3, max_ta
         # Clean up temporary file
         Path(query_path).unlink(missing_ok=True)
 
+def run_blast_batch(unitigs, fasta_path, blast_bin="blastn", evalue=1e-3):
+    """
+    BLAST many unitigs against one FASTA in a single call per task
+    (blastn-short for <50 bp, blastn otherwise) instead of one subprocess
+    per unitig. Returns {unitig: top hit dict} (same fields as
+    run_blast_unitig); unitigs without a hit are absent.
+    """
+    import tempfile
+
+    best = {}
+    groups = {
+        "blastn-short": [u for u in unitigs if len(u) < 50],
+        "blastn": [u for u in unitigs if len(u) >= 50],
+    }
+    for task, group in groups.items():
+        if not group:
+            continue
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".fasta", delete=False) as qf:
+            for i, u in enumerate(group):
+                qf.write(f">{i}\n{u}\n")
+            query_path = qf.name
+        try:
+            cmd = [
+                blast_bin,
+                "-query", query_path,
+                "-subject", str(fasta_path),
+                "-outfmt", "6 qseqid sseqid pident length mismatch gapopen qstart qend sstart send evalue bitscore sstrand",
+                "-evalue", str(evalue),
+                "-max_target_seqs", "1",
+                "-task", task,
+                "-word_size", "7",
+                "-reward", "2",
+                "-penalty", "-3",
+            ]
+            try:
+                result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+            except subprocess.CalledProcessError as e:
+                print(f"[warning] batch BLAST ({task}) failed for {fasta_path}: {e}")
+                continue
+            for hit_u, hit in parse_blast_tabular(result.stdout, group):
+                prev = best.get(hit_u)
+                if prev is None or hit["bitscore"] > prev["bitscore"]:
+                    best[hit_u] = hit
+        finally:
+            Path(query_path).unlink(missing_ok=True)
+    return best
+
+
+def parse_blast_tabular(text, queries):
+    """Yield (unitig, hit) from outfmt-6 text whose qseqid indexes `queries`."""
+    for line in text.strip().split("\n"):
+        parts = line.split("\t")
+        if len(parts) < 13:
+            continue
+        sstart, send = int(parts[8]), int(parts[9])
+        yield queries[int(parts[0])], {
+            "contig": parts[1],
+            "start": min(sstart, send),
+            "end": max(sstart, send),
+            "strand": "+" if parts[12] == "plus" else "-",
+            "pid": float(parts[2]),
+            "evalue": float(parts[10]),
+            "bitscore": float(parts[11]),
+            "length": int(parts[3]),
+        }
+
+
+def select_significant_unitigs(ps, q_thresh, max_unitigs=None):
+    """
+    BH-FDR on both Pyseer p-value columns; keep unitigs with
+    q_filter < q_thresh or q_lrt < q_thresh. If max_unitigs is set, keep
+    only the lowest-p max_unitigs of those. Adds q_filter, q_lrt and
+    best_pvalue columns.
+    """
+    ps = ps.copy()
+    ps["filter-pvalue"] = pd.to_numeric(ps["filter-pvalue"], errors="coerce")
+    ps["lrt-pvalue"] = pd.to_numeric(ps["lrt-pvalue"], errors="coerce")
+    ps["q_filter"] = compute_bh_qvalues(ps["filter-pvalue"].to_numpy(dtype=float))
+    ps["q_lrt"] = compute_bh_qvalues(ps["lrt-pvalue"].to_numpy(dtype=float))
+    ps["best_pvalue"] = ps[["filter-pvalue", "lrt-pvalue"]].min(axis=1)
+    sig = ps[(ps["q_filter"] < q_thresh) | (ps["q_lrt"] < q_thresh)]
+    if max_unitigs is not None and len(sig) > max_unitigs:
+        sig = sig.nsmallest(max_unitigs, "best_pvalue")
+    return sig.copy()
+
+
 # ---------------------------
 # Search / overlap (legacy - keeping for now)
 # ---------------------------
@@ -460,14 +550,13 @@ def process_sample(
     if not bakta_fasta_path.exists():
         raise FileNotFoundError(f"Bakta FASTA file not found: {bakta_fasta_path}")
 
-    # Process each unitig with BLAST
+    # BLAST all unitigs for this sample in one batch
+    print(f"[info] BLASTing {len(unitigs_for_sample):,} unitigs in sample {sample}")
+    top_hits = run_blast_batch(unitigs_for_sample, bakta_fasta_path)
     rows = []
     for unitig in unitigs_for_sample:
-        print(f"[info] BLASTing unitig {unitig} in sample {sample}")
-        
-        # Run BLAST
-        blast_hits = run_blast_unitig(unitig, bakta_fasta_path)
-        
+        blast_hits = [top_hits[unitig]] if unitig in top_hits else []
+
         if not blast_hits:
             # No BLAST hits found
             rows.append({
@@ -561,7 +650,8 @@ def main():
     ap.add_argument("--anno-pattern", default="{sample}/{sample}.tsv",
                     help="Annotation TSV pattern within --anno-dir (default '{sample}/{sample}.tsv').")
     ap.add_argument("--q-thresh", type=float, default=0.01, help="FDR threshold for either column (default 0.01).")
-    ap.add_argument("--max-unitigs", type=int, default=10000, help="Maximum number of unitigs to process (default 10000).")
+    ap.add_argument("--max-unitigs", type=int, default=None,
+                    help="Optional cap: after FDR filtering, keep only the N lowest-p unitigs (default: no cap).")
     ap.add_argument("--allow-revcomp", action="store_true", help="Search reverse-complement of unitigs too.")
     ap.add_argument("--out-prefix", required=True, help="Output prefix for TSVs.")
 
@@ -599,15 +689,11 @@ def main():
         if col not in ps.columns:
             raise SystemExit(f"Missing column in Pyseer: {col}")
 
-    # Convert p-values to float and get top N by p-value (no BH correction)
-    ps["filter-pvalue"] = pd.to_numeric(ps["filter-pvalue"], errors='coerce')
-    ps["lrt-pvalue"] = pd.to_numeric(ps["lrt-pvalue"], errors='coerce')
     ps["variant"] = ps["variant"].astype(str).str.strip()
-
-    # Get top N unitigs by best p-value (minimum of filter and lrt p-values)
-    ps["best_pvalue"] = ps[["filter-pvalue", "lrt-pvalue"]].min(axis=1)
-    ps_sig = ps.nsmallest(args.max_unitigs, "best_pvalue").copy()
-    print(f"[info] Selected top {len(ps_sig):,} unitigs by p-value (from {len(ps):,} total)")
+    ps_sig = select_significant_unitigs(ps, args.q_thresh, args.max_unitigs)
+    cap = f", capped at {args.max_unitigs:,}" if args.max_unitigs is not None else ""
+    print(f"[info] Selected {len(ps_sig):,} unitigs with q < {args.q_thresh} "
+          f"(BH on filter or LRT p-value{cap}) from {len(ps):,} total")
 
     if ps_sig.empty:
         write_tsv(pd.DataFrame(columns=[
@@ -734,15 +820,22 @@ def main():
         if lbl:
             ann_by_unitig[u].add(lbl)
 
+    stat_cols = [c for c in ("af", "beta", "filter-pvalue", "lrt-pvalue", "q_filter", "q_lrt")
+                 if c in ps_sig.columns]
+    stats = ps_sig.set_index("variant")[stat_cols].to_dict("index")
     rows_sum = []
     for u in sorted(signif_unitigs):
         ss = sorted(samples_by_unitig.get(u, set()))
         anns = sorted(ann_by_unitig.get(u, set()))
+        carriers = sorted(unitig_to_samples.get(u, set()))
         rows_sum.append({
             "unitig": u,
-            "n_samples": len(ss),
+            "n_samples": len(ss),            # genome(s) the unitig was annotated in
             "samples": ",".join(ss),
             "annotations": " | ".join(anns),
+            "n_carriers": len(carriers),     # all genomes containing the unitig
+            "carriers": ",".join(carriers),
+            **stats.get(u, {}),
         })
     df_sum = pd.DataFrame(rows_sum)
     write_tsv(df_sum, f"{args.out_prefix}_summary.tsv")
